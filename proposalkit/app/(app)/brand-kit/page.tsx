@@ -6,6 +6,13 @@ import { createClient } from '@/lib/supabase/client'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { Loader2, Save } from 'lucide-react'
 
+interface BrandKitRow {
+  agency_name: string | null
+  primary_color: string | null
+  tone_of_voice: string | null
+  logo_url: string | null
+}
+
 interface BrandKitForm {
   agency_name: string
   primary_color: string
@@ -35,7 +42,7 @@ export default function BrandKitPage() {
         .from('brand_kits')
         .select('*')
         .eq('user_id', user.id)
-        .maybeSingle()
+        .maybeSingle() as { data: BrandKitRow | null, error: unknown }
 
       if (data) {
         setForm({
