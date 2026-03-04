@@ -35,7 +35,7 @@ export default function BrandKitPage() {
         .from('brand_kits')
         .select('*')
         .eq('user_id', user.id)
-        .single()
+        .maybeSingle()
 
       if (data) {
         setForm({
