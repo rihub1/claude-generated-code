@@ -38,7 +38,8 @@ export default function BrandKitPage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      const { data } = await supabase
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data } = await (supabase as any)
         .from('brand_kits')
         .select('*')
         .eq('user_id', user.id)
@@ -66,7 +67,8 @@ export default function BrandKitPage() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    const { error: saveError } = await supabase
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error: saveError } = await (supabase as any)
       .from('brand_kits')
       .upsert(
         { user_id: user.id, ...form, updated_at: new Date().toISOString() },
