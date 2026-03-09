@@ -623,19 +623,41 @@ if session_exit and friday_close and strategy.position_size != 0
     strategy.close_all(comment="Weekend Close")
 
 // ─────────────────────────────────────────────────────────────────────
-// VISUALS — entry labels
+// VISUALS — entry labels + SL/TP lines
 // ─────────────────────────────────────────────────────────────────────
+int vis_extend = 80   // how many bars the SL/TP lines extend to the right
+
 if longCond
+    float e  = close
+    float sl = e - sl_pips_long  * pip
+    float t1 = e + sl_pips_long  * 2.0 * pip
+    float t2 = e + sl_pips_long  * full_rr  * pip
+    // entry label
     label.new(bar_index, low - 5*pip,
-              "LONG  BOS✓\n" + best_zone_long + "\nSL " + str.tostring(math.round(sl_pips_long,1)) + "p",
+              "▲ LONG\n" + best_zone_long + "\nSL " + str.tostring(math.round(sl_pips_long,1)) + "p",
               color=color.new(color.teal, 15), textcolor=color.white,
               style=label.style_label_up, size=size.small)
+    // SL / TP lines
+    line.new(bar_index, sl, bar_index + vis_extend, sl, color=color.red,    width=1, style=line.style_dashed)
+    line.new(bar_index, t1, bar_index + vis_extend, t1, color=color.orange, width=1, style=line.style_dashed)
+    line.new(bar_index, t2, bar_index + vis_extend, t2, color=color.lime,   width=2, style=line.style_dashed)
+    line.new(bar_index, e,  bar_index + vis_extend, e,  color=color.teal,   width=1, style=line.style_dotted)
 
 if shortCond
+    float e  = close
+    float sl = e + sl_pips_short * pip
+    float t1 = e - sl_pips_short * 2.0 * pip
+    float t2 = e - sl_pips_short * full_rr  * pip
+    // entry label
     label.new(bar_index, high + 5*pip,
-              "SHORT  BOS✓\n" + best_zone_short + "\nSL " + str.tostring(math.round(sl_pips_short,1)) + "p",
+              "▼ SHORT\n" + best_zone_short + "\nSL " + str.tostring(math.round(sl_pips_short,1)) + "p",
               color=color.new(color.maroon, 15), textcolor=color.white,
               style=label.style_label_down, size=size.small)
+    // SL / TP lines
+    line.new(bar_index, sl, bar_index + vis_extend, sl, color=color.red,    width=1, style=line.style_dashed)
+    line.new(bar_index, t1, bar_index + vis_extend, t1, color=color.orange, width=1, style=line.style_dashed)
+    line.new(bar_index, t2, bar_index + vis_extend, t2, color=color.lime,   width=2, style=line.style_dashed)
+    line.new(bar_index, e,  bar_index + vis_extend, e,  color=color.maroon, width=1, style=line.style_dotted)
 
 plot(bsl_level, "BSL", color.new(color.red,   55), 1, plot.style_circles)
 plot(ssl_level, "SSL", color.new(color.green, 55), 1, plot.style_circles)
