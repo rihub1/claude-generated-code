@@ -44,14 +44,14 @@ int   ny_end        = input.int  (16,    "NY end   (UTC)",      minval=0, maxval
 //   "Longs only"  = myfxbook shows retail majority SHORT → we go LONG
 //   "Shorts only" = myfxbook shows retail majority LONG  → we go SHORT
 //   "Both"        = no sentiment filter, take all ICT setups
-string sentiment_bias = input.string("Both", "Myfxbook sentiment bias",
+string sentiment_bias = input.string("Longs only", "Myfxbook sentiment bias",
                         options=["Longs only", "Shorts only", "Both"],
                         group="HTF Bias  (D1 + H4)",
-                        tooltip="Live EA: auto-reads myfxbook CSV.\nBacktest: set manually based on sentiment at the time you are testing.")
+                        tooltip="Live EA: auto-reads myfxbook CSV.\nBacktest: set manually.\nXAUUSD bull run 2020-2025 → use Longs only.")
 int   h4_ema_len    = input.int  (20,    "H4 EMA length (trend confirm)", minval=5,  group="HTF Bias  (D1 + H4)",
-                        tooltip="H4 EMA slope confirms direction. Filters trades against short-term momentum.")
+                        tooltip="H4 EMA slope confirms direction. Only enter when H4 momentum agrees.")
 bool  require_h4    = input.bool (true,  "Require H4 trend to agree",                group="HTF Bias  (D1 + H4)",
-                        tooltip="H4 EMA must slope in same direction as sentiment bias.")
+                        tooltip="Strongly recommended ON — filters counter-trend entries.")
 
 // H1 Structure (Order Blocks & FVGs identified on H1)
 int   h1_ob_lookback = input.int (20,   "H1 OB lookback (bars)",  minval=5, maxval=50,  group="H1 Structure  (OB + FVG)")
@@ -70,19 +70,22 @@ int   sweep_window    = input.int (5,    "Sweep lookback window (M15 bars)",    
 int   bos_expire_bars = input.int (48,   "BOS valid window (M15 bars after BOS)",minval=4, maxval=192, group="M15 Entry Triggers",
                         tooltip="How many M15 bars after a BOS to still look for a retrace entry.\n48 bars = 12 hours. After this window the pending setup expires.")
 
-// Risk & Exit — tiered fixed-amount sizing
-// £50–£99 = £5/trade  |  £100–£199 = £10/trade  |  £200–£499 = £20/trade  |  £500+ = hold at £20
-float sl_buffer_pips = input.float(10.0, "SL buffer beyond invalidation (pips)", minval=2, maxval=50, group="Risk and Exit",
-                        tooltip="Extra pips beyond the sweep level or zone edge.\nFor XAUUSD: 10 pips = $10. For FX majors: 10 pips = 0.001.")
-float fixed_sl_pips  = input.float(30.0, "Fallback SL (pips, if no sweep level)", minval=10,             group="Risk and Exit",
-                        tooltip="XAUUSD: 30 pips = $30 fallback stop. Increase if getting stopped by noise.")
-bool  use_be         = input.bool (true,  "Move SL to breakeven at 1:1",                            group="Risk and Exit")
-bool  use_partial    = input.bool (true,  "Close 50% at 2:1 R:R",                                   group="Risk and Exit")
-float full_rr        = input.float(4.0,  "Final TP (R:R on remaining 70%)",  minval=2.0,            group="Risk and Exit")
-bool  session_exit   = input.bool (true,  "Close before weekend (Friday)",                          group="Risk and Exit",
-                        tooltip="Closes any open trade on Friday at 20:00 UTC to avoid weekend gap risk.\nTrades can otherwise run through the week until TP/SL is hit.")
-int   max_pos        = input.int  (2,    "Max open positions",                minval=1,              group="Risk and Exit")
-int   max_wk_trades  = input.int  (6,    "Max trades per week",               minval=1, maxval=20,   group="Risk and Exit")
+// Risk & Exit
+bool  use_atr_sl     = input.bool (true,  "ATR-based stop loss (recommended)",                       group="Risk and Exit",
+                        tooltip="ON  = SL = ATR(14) × multiplier. Adapts to current volatility.\nOFF = fixed pip SL.")
+float atr_mult       = input.float(1.5,  "ATR multiplier for SL",            minval=0.5, maxval=5.0, group="Risk and Exit",
+                        tooltip="1.5 = 1.5× ATR below entry. Higher = wider stop, fewer stop-outs.")
+float fixed_sl_pips  = input.float(30.0, "Fixed SL (pips, if ATR off)",       minval=10,             group="Risk and Exit")
+bool  use_be         = input.bool (true,  "Move SL to breakeven at 1:1",                             group="Risk and Exit")
+bool  use_partial    = input.bool (true,  "Close 50% at 1:1 R:R",                                    group="Risk and Exit",
+                        tooltip="Take 50% off the table at 1:1. Remaining 50% runs to final TP.")
+float full_rr        = input.float(2.0,  "Final TP (R:R)",                   minval=1.5,             group="Risk and Exit",
+                        tooltip="2:1 is the sweet spot — achievable on M15 gold without giving back profit.")
+bool  session_exit   = input.bool (true,  "Close before weekend (Friday 20:00 UTC)",                 group="Risk and Exit")
+int   max_pos        = input.int  (1,    "Max open positions",                minval=1,               group="Risk and Exit")
+int   max_daily_trades = input.int(1,    "Max trades per day",                minval=1, maxval=3,     group="Risk and Exit",
+                        tooltip="1 = take only the best setup each day. Reduces overtrading significantly.")
+int   max_wk_trades  = input.int  (3,    "Max trades per week",               minval=1, maxval=10,    group="Risk and Exit")
 
 // ─────────────────────────────────────────────────────────────────────
 // PIP SIZE  (auto-detects pair)
@@ -441,20 +444,30 @@ string best_zone_short = (in_d1_bear_ob ? "D1 OB"  : in_d1_bear_fvg ? "D1 FVG" :
 
 
 // ─────────────────────────────────────────────────────────────────────
-// WEEKLY TRADE CAP
+// DAILY + WEEKLY TRADE CAPS
 // ─────────────────────────────────────────────────────────────────────
-var int week_trades = 0
-var int prev_closed = 0
+var int  week_trades  = 0
+var int  day_trades   = 0
+var int  prev_closed  = 0
+var int  prev_day     = 0
 
+// Reset daily counter each new day
+int cur_day = dayofmonth(time)
+if cur_day != prev_day
+    day_trades := 0
+    prev_day   := cur_day
+
+// Reset weekly counter each Monday
 if dayofweek(time) == 2 and dayofweek(time[1]) != 2
     week_trades := 0
 
 int newly_closed = strategy.closedtrades - prev_closed
 if newly_closed > 0
     week_trades := week_trades + newly_closed
+    day_trades  := day_trades  + newly_closed
 prev_closed := strategy.closedtrades
 
-bool under_cap = (strategy.opentrades + week_trades) < max_wk_trades
+bool under_cap = (strategy.opentrades + week_trades) < max_wk_trades and day_trades < max_daily_trades
 
 // ─────────────────────────────────────────────────────────────────────
 // PENDING SETUP STATE — BOS confirmed, now wait for retrace into zone
@@ -515,58 +528,28 @@ if shortCond
     pending_short := false
 
 // ─────────────────────────────────────────────────────────────────────
-// SL PLACEMENT — at the trade-invalidation point, not just zone edge
+// SL — ATR-based (adapts to volatility) or fixed pip fallback
 // ─────────────────────────────────────────────────────────────────────
-// ICT logic:
-//   Long  → SL below the SSL sweep low  (if price returns below the swept
-//            low, the bullish thesis is dead — trade invalidated)
-//   Short → SL above the BSL sweep high (if price returns above the swept
-//            high, the bearish thesis is dead — trade invalidated)
-//
-// sl_buffer_pips gives breathing room so a 1-pip undercut doesn't stop out.
-// Falls back to OB/FVG zone edge, then fixed_sl_pips, if levels are na.
-// ─────────────────────────────────────────────────────────────────────
-// SL at zone edge (OB/FVG bottom for longs, top for shorts) — zone break = trade invalidated
-float sl_stop_long  = in_d1_bull_ob  ? d1_ob_bot        - sl_buffer_pips * pip :
-                      in_d1_bull_fvg ? d1_bull_fvg_bot  - sl_buffer_pips * pip :
-                      in_h4_bull_ob  ? h4_ob_bot        - sl_buffer_pips * pip :
-                      in_h4_bull_fvg ? h4_bull_fvg_bot  - sl_buffer_pips * pip :
-                      in_h1_bull_ob  ? h1_ob_bot        - sl_buffer_pips * pip :
-                      in_h1_bull_fvg ? h1_bull_fvg_bot  - sl_buffer_pips * pip :
-                      m15_bullOB     ? m15_bullOB_bot   - sl_buffer_pips * pip :
-                      m15_bullFVG    ? m15_bullFVG_bot  - sl_buffer_pips * pip :
-                      not na(ssl_level) ? ssl_level     - sl_buffer_pips * pip :
-                                          close         - fixed_sl_pips * pip
+float atr_val      = ta.atr(14)
+float sl_dist      = use_atr_sl ? atr_val * atr_mult : fixed_sl_pips * pip
 
-float sl_stop_short = in_d1_bear_ob  ? d1_ob_top        + sl_buffer_pips * pip :
-                      in_d1_bear_fvg ? d1_bear_fvg_top  + sl_buffer_pips * pip :
-                      in_h4_bear_ob  ? h4_ob_top        + sl_buffer_pips * pip :
-                      in_h4_bear_fvg ? h4_bear_fvg_top  + sl_buffer_pips * pip :
-                      in_h1_bear_ob  ? h1_ob_top        + sl_buffer_pips * pip :
-                      in_h1_bear_fvg ? h1_bear_fvg_top  + sl_buffer_pips * pip :
-                      m15_bearOB     ? m15_bearOB_top   + sl_buffer_pips * pip :
-                      m15_bearFVG    ? m15_bearFVG_top  + sl_buffer_pips * pip :
-                      not na(bsl_level) ? bsl_level     + sl_buffer_pips * pip :
-                                          close         + fixed_sl_pips * pip
+float sl_pips_long  = sl_dist / pip
+float sl_pips_short = sl_dist / pip
 
-float sl_pips_long  = (close - sl_stop_long)  / pip
-float sl_pips_short = (sl_stop_short - close) / pip
-
-// Clamp SL: XAUUSD floor=20 pips ($20), ceiling=200 pips ($200)
-// FX majors floor=10 pips, ceiling=60 pips — auto-scales with pip definition
-float sl_floor   = str.contains(syminfo.ticker, "XAU") ? 20.0 : 10.0
-float sl_ceiling = str.contains(syminfo.ticker, "XAU") ? 200.0 : 60.0
+// Clamp: floor prevents SL inside the spread, ceiling prevents absurd size
+float sl_floor   = str.contains(syminfo.ticker, "XAU") ? 15.0 : 8.0
+float sl_ceiling = str.contains(syminfo.ticker, "XAU") ? 300.0 : 80.0
 sl_pips_long  := math.max(sl_floor, math.min(sl_ceiling, sl_pips_long))
 sl_pips_short := math.max(sl_floor, math.min(sl_ceiling, sl_pips_short))
 
-// Partial close at 2:1,  final close at full_rr (default 3:1)
-int sl_ticks_l    = math.round(sl_pips_long  * pip / syminfo.mintick)
-int tp2r_ticks_l  = math.round(sl_pips_long  * 2.0 * pip / syminfo.mintick)   // 2:1 partial
-int tp3r_ticks_l  = math.round(sl_pips_long  * full_rr * pip / syminfo.mintick) // final
+// Ticks for strategy.exit — partial at 1:1, final at full_rr (default 2:1)
+int sl_ticks_l   = math.round(sl_pips_long  * pip / syminfo.mintick)
+int tp1r_ticks_l = math.round(sl_pips_long  * 1.0 * pip / syminfo.mintick)   // 1:1 partial
+int tp2r_ticks_l = math.round(sl_pips_long  * full_rr * pip / syminfo.mintick) // final
 
-int sl_ticks_s    = math.round(sl_pips_short * pip / syminfo.mintick)
-int tp2r_ticks_s  = math.round(sl_pips_short * 2.0 * pip / syminfo.mintick)
-int tp3r_ticks_s  = math.round(sl_pips_short * full_rr * pip / syminfo.mintick)
+int sl_ticks_s   = math.round(sl_pips_short * pip / syminfo.mintick)
+int tp1r_ticks_s = math.round(sl_pips_short * 1.0 * pip / syminfo.mintick)
+int tp2r_ticks_s = math.round(sl_pips_short * full_rr * pip / syminfo.mintick)
 
 // ─────────────────────────────────────────────────────────────────────
 // PLACE ENTRIES + EXITS
@@ -574,18 +557,18 @@ int tp3r_ticks_s  = math.round(sl_pips_short * full_rr * pip / syminfo.mintick)
 if longCond
     strategy.entry("Long", strategy.long, qty=f_lots(sl_pips_long), comment="ICT L")
     if use_partial
-        strategy.exit("Long 2R",   "Long", qty_percent=30, profit=tp2r_ticks_l, loss=sl_ticks_l)
-        strategy.exit("Long Full", "Long", qty_percent=70, profit=tp3r_ticks_l, loss=sl_ticks_l)
+        strategy.exit("Long 1R",   "Long", qty_percent=50, profit=tp1r_ticks_l, loss=sl_ticks_l)
+        strategy.exit("Long Full", "Long", qty_percent=50, profit=tp2r_ticks_l, loss=sl_ticks_l)
     else
-        strategy.exit("Long Exit", "Long", profit=tp3r_ticks_l, loss=sl_ticks_l)
+        strategy.exit("Long Exit", "Long", profit=tp2r_ticks_l, loss=sl_ticks_l)
 
 if shortCond
     strategy.entry("Short", strategy.short, qty=f_lots(sl_pips_short), comment="ICT S")
     if use_partial
-        strategy.exit("Short 2R",   "Short", qty_percent=30, profit=tp2r_ticks_s, loss=sl_ticks_s)
-        strategy.exit("Short Full", "Short", qty_percent=70, profit=tp3r_ticks_s, loss=sl_ticks_s)
+        strategy.exit("Short 1R",   "Short", qty_percent=50, profit=tp1r_ticks_s, loss=sl_ticks_s)
+        strategy.exit("Short Full", "Short", qty_percent=50, profit=tp2r_ticks_s, loss=sl_ticks_s)
     else
-        strategy.exit("Short Exit", "Short", profit=tp3r_ticks_s, loss=sl_ticks_s)
+        strategy.exit("Short Exit", "Short", profit=tp2r_ticks_s, loss=sl_ticks_s)
 
 // ─────────────────────────────────────────────────────────────────────
 // BREAKEVEN at 1:1 — move SL to entry once trade is up 1R
