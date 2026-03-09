@@ -59,7 +59,9 @@ int   sweep_window   = input.int (5,    "Sweep lookback window (M15 bars)",    m
 
 // Risk & Exit — tiered fixed-amount sizing
 // £50–£99 = £5/trade  |  £100–£199 = £10/trade  |  £200–£499 = £20/trade  |  £500+ = hold at £20
-float fixed_sl_pips  = input.float(15.0, "Fallback SL (pips, no OB/FVG)",    minval=5,              group="Risk and Exit")
+float sl_buffer_pips = input.float(5.0,  "SL buffer beyond invalidation (pips)", minval=2, maxval=20, group="Risk and Exit",
+                        tooltip="Extra pips beyond the sweep level or zone edge.\nFor longs: SL = sweep low − buffer.\nFor shorts: SL = sweep high + buffer.")
+float fixed_sl_pips  = input.float(20.0, "Fallback SL (pips, if no sweep level)", minval=10,             group="Risk and Exit")
 bool  use_be         = input.bool (true,  "Move SL to breakeven at 1:1",                            group="Risk and Exit")
 bool  use_partial    = input.bool (true,  "Close 50% at 2:1 R:R",                                   group="Risk and Exit")
 float full_rr        = input.float(4.0,  "Final TP (R:R on remaining 70%)",  minval=2.0,            group="Risk and Exit")
@@ -244,6 +246,47 @@ plotshape(ssl_swept, "SSL Swept", shape.triangleup,   location.belowbar,
           color.new(color.green, 0), size=size.small, offset=-1)
 
 // ─────────────────────────────────────────────────────────────────────
+// MARKET STRUCTURE SHIFT  (BOS / CHoCH on M15)
+// ─────────────────────────────────────────────────────────────────────
+// After a liquidity sweep, we require a Break of Structure / Change of
+// Character (CHoCH) to confirm the institutional reversal before entering.
+//
+// ICT sequence:
+//   1. Kill zone        — timing filter
+//   2. Liquidity sweep  — stop hunt clears out retail orders
+//   3. BOS / CHoCH      — price breaks through internal structure →
+//                         confirms institutions have reversed direction
+//   4. OB / FVG retrace — precision entry inside the zone
+//
+// Implementation:
+//   SSL swept → bullish CHoCH = close > recent internal swing HIGH
+//   BSL swept → bearish CHoCH = close < recent internal swing LOW
+//
+// We use a 2-bar internal pivot (tighter than the BSL/SSL pivot) to
+// detect the first structure break immediately after the sweep.
+// ─────────────────────────────────────────────────────────────────────
+float ms_ph = ta.pivothigh(high, 2, 2)   // 2-bar internal swing high
+float ms_pl = ta.pivotlow (low,  2, 2)   // 2-bar internal swing low
+
+var float ms_high = na   // last confirmed internal swing high
+var float ms_low  = na   // last confirmed internal swing low
+
+if not na(ms_ph)
+    ms_high := ms_ph
+if not na(ms_pl)
+    ms_low  := ms_pl
+
+// BOS / CHoCH — close breaks through structural level after a sweep
+bool bos_bull = ssl_swept and not na(ms_high) and close > ms_high
+bool bos_bear = bsl_swept and not na(ms_low)  and close < ms_low
+
+// Visual BOS markers
+plotshape(bos_bull, "BOS Bull", shape.labelup,   location.belowbar,
+          color.new(color.teal,  20), size=size.tiny, text="BOS")
+plotshape(bos_bear, "BOS Bear", shape.labeldown, location.abovebar,
+          color.new(color.maroon,20), size=size.tiny, text="BOS")
+
+// ─────────────────────────────────────────────────────────────────────
 // M15 ORDER BLOCKS (backup — used if no H1 OB/FVG in range)
 // ─────────────────────────────────────────────────────────────────────
 bool  m15_bullOB = false
@@ -318,16 +361,6 @@ if bar_index > h1_fvg_lookback + 5
 bool structL = in_h1_bull_ob or in_h1_bull_fvg or m15_bullOB or m15_bullFVG
 bool structS = in_h1_bear_ob or in_h1_bear_fvg or m15_bearOB or m15_bearFVG
 
-// SL reference price: use H1 zone bottom/top if available, else M15, else fixed
-float sl_ref_long  = in_h1_bull_ob  ? h1_ob_bot  :
-                     in_h1_bull_fvg ? h1_bull_fvg_bot :
-                     m15_bullOB     ? m15_bullOB_bot :
-                     m15_bullFVG    ? m15_bullFVG_bot : close - fixed_sl_pips * pip
-
-float sl_ref_short = in_h1_bear_ob  ? h1_ob_top  :
-                     in_h1_bear_fvg ? h1_bear_fvg_top :
-                     m15_bearOB     ? m15_bearOB_top :
-                     m15_bearFVG    ? m15_bearFVG_top : close + fixed_sl_pips * pip
 
 // ─────────────────────────────────────────────────────────────────────
 // WEEKLY TRADE CAP
@@ -346,28 +379,51 @@ prev_closed := strategy.closedtrades
 bool under_cap = (strategy.opentrades + week_trades) < max_wk_trades
 
 // ─────────────────────────────────────────────────────────────────────
-// ENTRY CONDITIONS
+// ENTRY CONDITIONS — full ICT sequence (all must align)
 // ─────────────────────────────────────────────────────────────────────
-// NOT all conditions need to align — just the logical groups:
-//   1. HTF bias (D1 sentiment + optional H4 trend)  ← direction
-//   2. Kill zone active                              ← timing
-//   3. M15 liquidity sweep (within sweep_window)    ← trigger
-//   4. At least one H1 or M15 structure zone        ← precision entry
+//   1. Contrarian sentiment (D1 RSI) + H4 trend    ← HTF bias / direction
+//   2. Kill zone active (London / NY)               ← timing
+//   3. Liquidity sweep (BSL or SSL)                 ← institutional trigger
+//   4. Market Structure Shift / BOS                 ← confirms reversal
+//   5. At H1 or M15 OB / FVG zone                  ← precision entry
 // ─────────────────────────────────────────────────────────────────────
 bool canTrade = strategy.opentrades < max_pos and under_cap
 
-bool longCond  = canTrade and bias_long  and inKZ and ssl_swept and structL
-bool shortCond = canTrade and bias_short and inKZ and bsl_swept and structS
+bool longCond  = canTrade and bias_long  and inKZ and ssl_swept and bos_bull and structL
+bool shortCond = canTrade and bias_short and inKZ and bsl_swept and bos_bear and structS
 
 // ─────────────────────────────────────────────────────────────────────
-// SL / TP IN PIPS
+// SL PLACEMENT — at the trade-invalidation point, not just zone edge
 // ─────────────────────────────────────────────────────────────────────
-float sl_pips_long  = (close - sl_ref_long)  / pip + 3   // 3 pip buffer below zone
-float sl_pips_short = (sl_ref_short - close) / pip + 3
+// ICT logic:
+//   Long  → SL below the SSL sweep low  (if price returns below the swept
+//            low, the bullish thesis is dead — trade invalidated)
+//   Short → SL above the BSL sweep high (if price returns above the swept
+//            high, the bearish thesis is dead — trade invalidated)
+//
+// sl_buffer_pips gives breathing room so a 1-pip undercut doesn't stop out.
+// Falls back to OB/FVG zone edge, then fixed_sl_pips, if levels are na.
+// ─────────────────────────────────────────────────────────────────────
+float sl_stop_long  = not na(ssl_level)    ? ssl_level  - sl_buffer_pips * pip :
+                      in_h1_bull_ob        ? h1_ob_bot  - sl_buffer_pips * pip :
+                      in_h1_bull_fvg       ? h1_bull_fvg_bot - sl_buffer_pips * pip :
+                      m15_bullOB           ? m15_bullOB_bot  - sl_buffer_pips * pip :
+                      m15_bullFVG          ? m15_bullFVG_bot - sl_buffer_pips * pip :
+                                             close - fixed_sl_pips * pip
 
-// Clamp to sensible range
-sl_pips_long  := math.max(5, math.min(80, sl_pips_long))
-sl_pips_short := math.max(5, math.min(80, sl_pips_short))
+float sl_stop_short = not na(bsl_level)   ? bsl_level  + sl_buffer_pips * pip :
+                      in_h1_bear_ob       ? h1_ob_top  + sl_buffer_pips * pip :
+                      in_h1_bear_fvg      ? h1_bear_fvg_top + sl_buffer_pips * pip :
+                      m15_bearOB          ? m15_bearOB_top  + sl_buffer_pips * pip :
+                      m15_bearFVG         ? m15_bearFVG_top + sl_buffer_pips * pip :
+                                            close + fixed_sl_pips * pip
+
+float sl_pips_long  = (close - sl_stop_long)  / pip
+float sl_pips_short = (sl_stop_short - close) / pip
+
+// Floor at 15 pips — never use a stop so tight it gets clipped by spread/noise
+sl_pips_long  := math.max(15, math.min(80, sl_pips_long))
+sl_pips_short := math.max(15, math.min(80, sl_pips_short))
 
 // Partial close at 2:1,  final close at full_rr (default 3:1)
 int sl_ticks_l    = math.round(sl_pips_long  * pip / syminfo.mintick)
@@ -442,13 +498,13 @@ string short_zone = in_h1_bear_ob ? "H1 OB" : in_h1_bear_fvg ? "H1 FVG" :
 
 if longCond
     label.new(bar_index, low - 5*pip,
-              "LONG\n" + long_zone + "\nSL " + str.tostring(math.round(sl_pips_long,1)) + "p",
+              "LONG  BOS✓\nSweep+KZ+" + long_zone + "\nSL " + str.tostring(math.round(sl_pips_long,1)) + "p",
               color=color.new(color.teal, 15), textcolor=color.white,
               style=label.style_label_up, size=size.small)
 
 if shortCond
     label.new(bar_index, high + 5*pip,
-              "SHORT\n" + short_zone + "\nSL " + str.tostring(math.round(sl_pips_short,1)) + "p",
+              "SHORT  BOS✓\nSweep+KZ+" + short_zone + "\nSL " + str.tostring(math.round(sl_pips_short,1)) + "p",
               color=color.new(color.maroon, 15), textcolor=color.white,
               style=label.style_label_down, size=size.small)
 
@@ -470,7 +526,7 @@ if in_h1_bear_ob
 // ─────────────────────────────────────────────────────────────────────
 // INFO TABLE
 // ─────────────────────────────────────────────────────────────────────
-var table info = table.new(position.top_right, 2, 10,
+var table info = table.new(position.top_right, 2, 11,
      bgcolor=color.new(color.black, 75), border_width=1, frame_width=1)
 
 if barstate.islast
@@ -503,21 +559,25 @@ if barstate.islast
     table.cell(info, 1, 5, (ssl_swept?"SSL✓ ":"SSL✗ ") + (bsl_swept?"BSL✓":"BSL✗"),
                text_color=color.white,                                   text_size=size.tiny)
 
-    table.cell(info, 0, 6, "Structure",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 6, (structL?"L✓ ":"L✗ ") + (structS?"S✓":"S✗"),
+    table.cell(info, 0, 6, "BOS / CHoCH",        text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 6, (bos_bull?"Bull✓ ":"Bull✗ ") + (bos_bear?"Bear✓":"Bear✗"),
+               text_color=bos_bull or bos_bear ? color.lime : color.gray, text_size=size.tiny)
+
+    table.cell(info, 0, 7, "OB / FVG zone",     text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 7, (structL?"L✓ ":"L✗ ") + (structS?"S✓":"S✗"),
                text_color=color.white,                                   text_size=size.tiny)
 
-    table.cell(info, 0, 7, "Wk trades",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 7, str.tostring(week_trades) + " / " + str.tostring(max_wk_trades),
+    table.cell(info, 0, 8, "Wk trades",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 8, str.tostring(week_trades) + " / " + str.tostring(max_wk_trades),
                text_color=week_trades>=max_wk_trades ? color.red : color.lime,
                text_size=size.tiny)
 
-    // ── ROW 8: Risk tier ─────────────────────────────────────────────────
-    table.cell(info, 0, 8, "Risk tier",          text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 8, risk_tier,
+    // ── ROW 9: Risk tier ─────────────────────────────────────────────────
+    table.cell(info, 0, 9, "Risk tier",          text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 9, risk_tier,
                text_color=balance >= 500.0 ? color.orange : color.lime,  text_size=size.tiny)
 
-    // ── ROW 9: Balance ───────────────────────────────────────────────────
-    table.cell(info, 0, 9, "Balance",            text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 9, "£" + str.tostring(math.round(balance, 2)),
+    // ── ROW 10: Balance ──────────────────────────────────────────────────
+    table.cell(info, 0, 10, "Balance",           text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 10, "£" + str.tostring(math.round(balance, 2)),
                text_color=color.white,                                   text_size=size.tiny)
