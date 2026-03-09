@@ -641,58 +641,65 @@ if in_h1_bear_ob
 // ─────────────────────────────────────────────────────────────────────
 // INFO TABLE
 // ─────────────────────────────────────────────────────────────────────
-var table info = table.new(position.top_right, 2, 11,
+// ─────────────────────────────────────────────────────────────────────
+// INFO TABLE  (updated every bar — no barstate.islast needed)
+// barstate.islast is unreliable in strategies with calc_on_every_tick=false
+// ─────────────────────────────────────────────────────────────────────
+var table info = table.new(position.top_right, 2, 12,
      bgcolor=color.new(color.black, 75), border_width=1, frame_width=1)
 
-if barstate.islast
-    table.cell(info, 0, 0, "ICT Sentinel v4",   text_color=color.white,  text_size=size.small)
-    table.cell(info, 1, 0, "MTF  M15 entry",    text_color=color.lime,   text_size=size.small)
+string sent_label = d1_bias == 1  ? "Retail SHORT → we LONG"  :
+                    d1_bias == -1 ? "Retail LONG  → we SHORT" : "No extreme — skip"
 
-    // ── ROW 1: Contrarian sentiment — FIRST FILTER ──────────────────────
-    // RSI proxies myfxbook retail crowd positioning.
-    // We trade AGAINST the retail majority — the same way institutions do.
-    string sent_label = d1_bias == 1  ? "Retail SHORT → we LONG"  :
-                        d1_bias == -1 ? "Retail LONG  → we SHORT" : "No extreme — skip"
-    table.cell(info, 0, 1, "1 Sentiment",        text_color=color.yellow, text_size=size.tiny)
-    table.cell(info, 1, 1, sent_label,
-               text_color=d1_bias != 0 ? color.lime : color.gray,        text_size=size.tiny)
+string pend_label = pending_long  ? "LONG pending ▲"  :
+                    pending_short ? "SHORT pending ▼" : "none"
 
-    table.cell(info, 0, 2, "D1 RSI",            text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 2, str.tostring(math.round(d1_rsi,1)),
-               text_color=color.white,                                   text_size=size.tiny)
+table.cell(info, 0, 0,  "ICT Sentinel v5",  text_color=color.white,  text_size=size.small)
+table.cell(info, 1, 0,  "D1/H4/H1 zones",  text_color=color.lime,   text_size=size.small)
 
-    table.cell(info, 0, 3, "H4 Trend",          text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 3, h4_bull ? "▲ up" : h4_bear ? "▼ down" : "flat",
-               text_color=h4_bull ? color.lime : h4_bear ? color.red : color.gray,
-               text_size=size.tiny)
+table.cell(info, 0, 1,  "1 Sentiment",      text_color=color.yellow, text_size=size.tiny)
+table.cell(info, 1, 1,  sent_label,
+           text_color=d1_bias != 0 ? color.lime : color.gray,        text_size=size.tiny)
 
-    table.cell(info, 0, 4, "Kill Zone",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 4, inKZ ? "ACTIVE" : "off",
-               text_color=inKZ ? color.orange : color.gray,              text_size=size.tiny)
+table.cell(info, 0, 2,  "D1 RSI",           text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 2,  str.tostring(math.round(d1_rsi, 1)),
+           text_color=color.white,                                    text_size=size.tiny)
 
-    table.cell(info, 0, 5, "Sweep L/S",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 5, (ssl_swept?"SSL✓ ":"SSL✗ ") + (bsl_swept?"BSL✓":"BSL✗"),
-               text_color=color.white,                                   text_size=size.tiny)
+table.cell(info, 0, 3,  "H4 Trend",         text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 3,  h4_bull ? "▲ up" : h4_bear ? "▼ down" : "flat",
+           text_color=h4_bull ? color.lime : h4_bear ? color.red : color.gray,
+           text_size=size.tiny)
 
-    table.cell(info, 0, 6, "BOS / CHoCH",        text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 6, (bos_bull?"Bull✓ ":"Bull✗ ") + (bos_bear?"Bear✓":"Bear✗"),
-               text_color=bos_bull or bos_bear ? color.lime : color.gray, text_size=size.tiny)
+table.cell(info, 0, 4,  "Kill Zone",        text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 4,  inKZ ? "ACTIVE" : "off",
+           text_color=inKZ ? color.orange : color.gray,               text_size=size.tiny)
 
-    table.cell(info, 0, 7, "OB / FVG zone",     text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 7, (structL?"L✓ ":"L✗ ") + (structS?"S✓":"S✗"),
-               text_color=color.white,                                   text_size=size.tiny)
+table.cell(info, 0, 5,  "Sweep L/S",        text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 5,  (ssl_swept ? "SSL✓ " : "SSL✗ ") + (bsl_swept ? "BSL✓" : "BSL✗"),
+           text_color=color.white,                                    text_size=size.tiny)
 
-    table.cell(info, 0, 8, "Wk trades",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 8, str.tostring(week_trades) + " / " + str.tostring(max_wk_trades),
-               text_color=week_trades>=max_wk_trades ? color.red : color.lime,
-               text_size=size.tiny)
+table.cell(info, 0, 6,  "BOS / CHoCH",      text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 6,  (bos_bull ? "Bull✓ " : "Bull✗ ") + (bos_bear ? "Bear✓" : "Bear✗"),
+           text_color=bos_bull or bos_bear ? color.lime : color.gray, text_size=size.tiny)
 
-    // ── ROW 9: Risk tier ─────────────────────────────────────────────────
-    table.cell(info, 0, 9, "Risk tier",          text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 9, risk_tier,
-               text_color=balance >= 500.0 ? color.orange : color.lime,  text_size=size.tiny)
+table.cell(info, 0, 7,  "Pending setup",    text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 7,  pend_label,
+           text_color=pending_long or pending_short ? color.lime : color.gray,
+           text_size=size.tiny)
 
-    // ── ROW 10: Balance ──────────────────────────────────────────────────
-    table.cell(info, 0, 10, "Balance",           text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 10, "£" + str.tostring(math.round(balance, 2)),
-               text_color=color.white,                                   text_size=size.tiny)
+table.cell(info, 0, 8,  "OB / FVG zone",    text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 8,  (structL ? "L✓ " : "L✗ ") + (structS ? "S✓" : "S✗"),
+           text_color=color.white,                                    text_size=size.tiny)
+
+table.cell(info, 0, 9,  "Wk trades",        text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 9,  str.tostring(week_trades) + " / " + str.tostring(max_wk_trades),
+           text_color=week_trades >= max_wk_trades ? color.red : color.lime,
+           text_size=size.tiny)
+
+table.cell(info, 0, 10, "Risk tier",        text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 10, risk_tier,
+           text_color=balance >= 500.0 ? color.orange : color.lime,   text_size=size.tiny)
+
+table.cell(info, 0, 11, "Balance",          text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 11, "£" + str.tostring(math.round(balance, 2)),
+           text_color=color.white,                                    text_size=size.tiny)
