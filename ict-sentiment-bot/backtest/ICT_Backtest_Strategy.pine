@@ -248,13 +248,17 @@ plotshape(ssl_swept, "SSL Swept", shape.triangleup,   location.belowbar,
 // ─────────────────────────────────────────────────────────────────────
 bool  m15_bullOB = false
 bool  m15_bearOB = false
-float m15_bullOB_top = na,  m15_bullOB_bot = na
-float m15_bearOB_top = na,  m15_bearOB_bot = na
+float m15_bullOB_top = na
+float m15_bullOB_bot = na
+float m15_bearOB_top = na
+float m15_bearOB_bot = na
 
 if bar_index > h1_ob_lookback + 5
     for i = 2 to h1_ob_lookback
-        float o_i  = open[i],  c_i = close[i]
-        float h_i  = high[i],  l_i = low[i]
+        float o_i  = open[i]
+        float c_i  = close[i]
+        float h_i  = high[i]
+        float l_i  = low[i]
         float body = math.abs(c_i - o_i) / pip
         if body >= h1_ob_min_body
             if c_i < o_i and not m15_bullOB
@@ -281,14 +285,19 @@ if bar_index > h1_ob_lookback + 5
 // ─────────────────────────────────────────────────────────────────────
 // M15 FAIR VALUE GAPS (backup)
 // ─────────────────────────────────────────────────────────────────────
-bool  m15_bullFVG = false,  m15_bearFVG = false
-float m15_bullFVG_top = na, m15_bullFVG_bot = na
-float m15_bearFVG_top = na, m15_bearFVG_bot = na
+bool  m15_bullFVG = false
+bool  m15_bearFVG = false
+float m15_bullFVG_top = na
+float m15_bullFVG_bot = na
+float m15_bearFVG_top = na
+float m15_bearFVG_bot = na
 
 if bar_index > h1_fvg_lookback + 5
     for i = 2 to h1_fvg_lookback
-        float pH = high[i+1], pL = low[i+1]
-        float nH = high[i-1], nL = low[i-1]
+        float pH = high[i+1]
+        float pL = low[i+1]
+        float nH = high[i-1]
+        float nL = low[i-1]
         if not m15_bullFVG and nL > pH
             float gap = (nL - pH) / pip
             if gap >= h1_fvg_min and close >= pH and close <= nL
