@@ -95,9 +95,10 @@ float pip = syminfo.mintick *
 // ─────────────────────────────────────────────────────────────────────
 float balance = strategy.equity
 
-float risk_amount = balance >= 200.0 ? 20.0 :   // £200-£499 and £500+ → £20 (capped)
-                    balance >= 100.0 ? 10.0 :   // £100-£199 → £10
-                                        5.0     // £50-£99   → £5
+// £200-£499 and £500+ → £20 (capped) | £100-£199 → £10 | £50-£99 → £5
+float risk_amount = (balance >= 200.0 ? 20.0 :
+                     balance >= 100.0 ? 10.0 :
+                                         5.0)
 
 // Risk tier label for the info table
 string risk_tier = balance >= 500.0 ? "£20  ⚠ re-evaluate" :
