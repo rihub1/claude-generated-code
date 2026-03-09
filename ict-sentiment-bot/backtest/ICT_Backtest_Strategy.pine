@@ -39,12 +39,19 @@ bool  use_ny        = input.bool (true,  "New York Kill Zone",            group=
 int   ny_start      = input.int  (13,    "NY start (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
 int   ny_end        = input.int  (16,    "NY end   (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
 
-// HTF Bias (D1 + H4) — Direction
-float d1_sent_long  = input.float(60.0,  "D1 RSI ≥ X  →  SHORT bias (retail majority long)",  minval=51, maxval=90, group="HTF Bias  (D1 + H4)")
-float d1_sent_short = input.float(40.0,  "D1 RSI ≤ X  →  LONG  bias (retail majority short)", minval=10, maxval=49, group="HTF Bias  (D1 + H4)")
-int   h4_ema_len    = input.int  (20,    "H4 trend EMA length",           minval=5,            group="HTF Bias  (D1 + H4)")
-bool  require_h4    = input.bool (false, "Require H4 trend to agree",                          group="HTF Bias  (D1 + H4)",
-                        tooltip="H4 EMA must slope in the same direction as D1 bias.\nIf unchecked, D1 bias alone is enough.")
+// HTF Bias — myfxbook sentiment (live EA reads this from CSV)
+// In backtest we cannot pull live myfxbook data so set manually:
+//   "Longs only"  = myfxbook shows retail majority SHORT → we go LONG
+//   "Shorts only" = myfxbook shows retail majority LONG  → we go SHORT
+//   "Both"        = no sentiment filter, take all ICT setups
+string sentiment_bias = input.string("Both", "Myfxbook sentiment bias",
+                        options=["Longs only", "Shorts only", "Both"],
+                        group="HTF Bias  (D1 + H4)",
+                        tooltip="Live EA: auto-reads myfxbook CSV.\nBacktest: set manually based on sentiment at the time you are testing.")
+int   h4_ema_len    = input.int  (20,    "H4 EMA length (trend confirm)", minval=5,  group="HTF Bias  (D1 + H4)",
+                        tooltip="H4 EMA slope confirms direction. Filters trades against short-term momentum.")
+bool  require_h4    = input.bool (true,  "Require H4 trend to agree",                group="HTF Bias  (D1 + H4)",
+                        tooltip="H4 EMA must slope in same direction as sentiment bias.")
 
 // H1 Structure (Order Blocks & FVGs identified on H1)
 int   h1_ob_lookback = input.int (20,   "H1 OB lookback (bars)",  minval=5, maxval=50,  group="H1 Structure  (OB + FVG)")
@@ -148,16 +155,10 @@ bgcolor(use_london and utcH >= london_start and utcH < london_end ? color.new(co
 bgcolor(use_ny     and utcH >= ny_start     and utcH < ny_end     ? color.new(color.orange, 92) : na, title="NY KZ")
 
 // ─────────────────────────────────────────────────────────────────────
-// D1 BIAS — sentiment proxy (previous completed daily bar, anti-lookahead)
+// D1 BIAS — driven by myfxbook sentiment (manual in backtest, CSV in live EA)
 // ─────────────────────────────────────────────────────────────────────
-float d1_rsi = request.security(syminfo.tickerid, "D",
-                    ta.rsi(close, 14)[1],
-                    lookahead = barmerge.lookahead_off)
-
-// +1 = go LONG (retail majority short, fade them)
-// -1 = go SHORT (retail majority long, fade them)
-//  0 = no clear extreme, no trade
-int d1_bias = d1_rsi <= d1_sent_short ? 1 : d1_rsi >= d1_sent_long ? -1 : 0
+int d1_bias = (sentiment_bias == "Longs only"  ?  1 :
+               sentiment_bias == "Shorts only" ? -1 : 0)
 
 // ─────────────────────────────────────────────────────────────────────
 // H4 TREND — must agree with D1 bias (previous completed H4 bar)
@@ -171,9 +172,10 @@ float h4_ema_prev = request.security(syminfo.tickerid, "240",
 bool h4_bull = h4_ema_now > h4_ema_prev   // H4 trending up
 bool h4_bear = h4_ema_now < h4_ema_prev   // H4 trending down
 
-// Final directional bias — D1 required, H4 optional confirmation
-bool bias_long  = d1_bias ==  1 and (not require_h4 or h4_bull)
-bool bias_short = d1_bias == -1 and (not require_h4 or h4_bear)
+// Final directional bias
+// "Both" = d1_bias is 0 so bypass the sentiment check entirely
+bool bias_long  = (sentiment_bias == "Both" ? (not require_h4 or h4_bull)  : (d1_bias ==  1 and (not require_h4 or h4_bull)))
+bool bias_short = (sentiment_bias == "Both" ? (not require_h4 or h4_bear)  : (d1_bias == -1 and (not require_h4 or h4_bear)))
 
 // ─────────────────────────────────────────────────────────────────────
 // D1 ORDER BLOCKS & FVGs
@@ -684,8 +686,8 @@ if in_h1_bear_ob
 var table info = table.new(position.top_right, 2, 12,
      bgcolor=color.new(color.black, 75), border_width=1, frame_width=1)
 
-string sent_label = (d1_bias == 1  ? "Retail SHORT → we LONG"  :
-                     d1_bias == -1 ? "Retail LONG  → we SHORT" : "No extreme — skip")
+string sent_label = (sentiment_bias == "Longs only"  ? "Retail SHORT → LONG only" :
+                     sentiment_bias == "Shorts only" ? "Retail LONG  → SHORT only" : "Both directions")
 
 string pend_label = (pending_long  ? "LONG pending ▲"  :
                      pending_short ? "SHORT pending ▼" : "none")
@@ -693,17 +695,18 @@ string pend_label = (pending_long  ? "LONG pending ▲"  :
 table.cell(info, 0, 0,  "ICT Sentinel v5",  text_color=color.white,  text_size=size.small)
 table.cell(info, 1, 0,  "D1/H4/H1 zones",  text_color=color.lime,   text_size=size.small)
 
-table.cell(info, 0, 1,  "1 Sentiment",      text_color=color.yellow, text_size=size.tiny)
+table.cell(info, 0, 1,  "Sentiment",        text_color=color.yellow, text_size=size.tiny)
 table.cell(info, 1, 1,  sent_label,
-           text_color=d1_bias != 0 ? color.lime : color.gray,        text_size=size.tiny)
+           text_color=sentiment_bias == "Both" ? color.gray : color.lime, text_size=size.tiny)
 
-table.cell(info, 0, 2,  "D1 RSI",           text_color=color.gray,   text_size=size.tiny)
-table.cell(info, 1, 2,  str.tostring(math.round(d1_rsi, 1)),
-           text_color=color.white,                                    text_size=size.tiny)
-
-table.cell(info, 0, 3,  "H4 Trend",         text_color=color.gray,   text_size=size.tiny)
-table.cell(info, 1, 3,  h4_bull ? "▲ up" : h4_bear ? "▼ down" : "flat",
+table.cell(info, 0, 2,  "H4 Trend",         text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 2,  h4_bull ? "▲ up" : h4_bear ? "▼ down" : "flat",
            text_color=h4_bull ? color.lime : h4_bear ? color.red : color.gray,
+           text_size=size.tiny)
+
+table.cell(info, 0, 3,  "Bias",             text_color=color.gray,   text_size=size.tiny)
+table.cell(info, 1, 3,  (bias_long ? "LONG ▲" : bias_short ? "SHORT ▼" : "none"),
+           text_color=bias_long ? color.lime : bias_short ? color.red : color.gray,
            text_size=size.tiny)
 
 table.cell(info, 0, 4,  "Kill Zone",        text_color=color.gray,   text_size=size.tiny)
