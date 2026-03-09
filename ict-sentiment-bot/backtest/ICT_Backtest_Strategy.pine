@@ -67,9 +67,10 @@ int   bos_expire_bars = input.int (48,   "BOS valid window (M15 bars after BOS)"
 
 // Risk & Exit — tiered fixed-amount sizing
 // £50–£99 = £5/trade  |  £100–£199 = £10/trade  |  £200–£499 = £20/trade  |  £500+ = hold at £20
-float sl_buffer_pips = input.float(5.0,  "SL buffer beyond invalidation (pips)", minval=2, maxval=20, group="Risk and Exit",
-                        tooltip="Extra pips beyond the sweep level or zone edge.\nFor longs: SL = sweep low − buffer.\nFor shorts: SL = sweep high + buffer.")
-float fixed_sl_pips  = input.float(20.0, "Fallback SL (pips, if no sweep level)", minval=10,             group="Risk and Exit")
+float sl_buffer_pips = input.float(10.0, "SL buffer beyond invalidation (pips)", minval=2, maxval=50, group="Risk and Exit",
+                        tooltip="Extra pips beyond the sweep level or zone edge.\nFor XAUUSD: 10 pips = $10. For FX majors: 10 pips = 0.001.")
+float fixed_sl_pips  = input.float(30.0, "Fallback SL (pips, if no sweep level)", minval=10,             group="Risk and Exit",
+                        tooltip="XAUUSD: 30 pips = $30 fallback stop. Increase if getting stopped by noise.")
 bool  use_be         = input.bool (true,  "Move SL to breakeven at 1:1",                            group="Risk and Exit")
 bool  use_partial    = input.bool (true,  "Close 50% at 2:1 R:R",                                   group="Risk and Exit")
 float full_rr        = input.float(4.0,  "Final TP (R:R on remaining 70%)",  minval=2.0,            group="Risk and Exit")
@@ -81,10 +82,13 @@ int   max_wk_trades  = input.int  (6,    "Max trades per week",               mi
 // ─────────────────────────────────────────────────────────────────────
 // PIP SIZE  (auto-detects pair)
 // ─────────────────────────────────────────────────────────────────────
+// XAU/XAG: mintick=0.01, 1 pip = $1.00 → multiply by 100
+// JPY pairs: mintick=0.001, 1 pip = 0.01 → multiply by 10
+// FX majors: mintick=0.00001, 1 pip = 0.0001 → multiply by 10
 float pip = syminfo.mintick *
-     (str.contains(syminfo.ticker, "JPY") ? 100 :
-      str.contains(syminfo.ticker, "XAU") ? 10  :
-      str.contains(syminfo.ticker, "XAG") ? 10  : 10)
+     (str.contains(syminfo.ticker, "XAU") ? 100 :
+      str.contains(syminfo.ticker, "XAG") ? 100 :
+      str.contains(syminfo.ticker, "JPY") ? 10  : 10)
 
 // ─────────────────────────────────────────────────────────────────────
 // TIERED RISK SIZING  (fixed £ amounts, not % of equity)
@@ -548,9 +552,12 @@ float sl_stop_short = in_d1_bear_ob  ? d1_ob_top        + sl_buffer_pips * pip :
 float sl_pips_long  = (close - sl_stop_long)  / pip
 float sl_pips_short = (sl_stop_short - close) / pip
 
-// Floor at 15 pips — never use a stop so tight it gets clipped by spread/noise
-sl_pips_long  := math.max(10, math.min(60, sl_pips_long))
-sl_pips_short := math.max(10, math.min(60, sl_pips_short))
+// Clamp SL: XAUUSD floor=20 pips ($20), ceiling=200 pips ($200)
+// FX majors floor=10 pips, ceiling=60 pips — auto-scales with pip definition
+float sl_floor   = str.contains(syminfo.ticker, "XAU") ? 20.0 : 10.0
+float sl_ceiling = str.contains(syminfo.ticker, "XAU") ? 200.0 : 60.0
+sl_pips_long  := math.max(sl_floor, math.min(sl_ceiling, sl_pips_long))
+sl_pips_short := math.max(sl_floor, math.min(sl_ceiling, sl_pips_short))
 
 // Partial close at 2:1,  final close at full_rr (default 3:1)
 int sl_ticks_l    = math.round(sl_pips_long  * pip / syminfo.mintick)
