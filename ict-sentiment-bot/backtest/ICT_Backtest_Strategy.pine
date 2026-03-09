@@ -1,172 +1,128 @@
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║         ICT Sentinel — Backtest Strategy  (Pine Script v5)       ║
+// ║         ICT Sentinel — Backtest Strategy  (Pine Script v6)       ║
 // ║  Lookahead-free: signals on bar CLOSE, fills at next bar OPEN    ║
 // ╠══════════════════════════════════════════════════════════════════╣
-// ║  ANTI-LOOKAHEAD GUARANTEES — READ BEFORE EDITING                 ║
-// ║                                                                   ║
-// ║  1. process_orders_on_close=false  → entry fills at NEXT open    ║
-// ║  2. calc_on_every_tick=false       → only runs on confirmed bars  ║
-// ║  3. Sentiment: D1 RSI with [1] inside request.security +         ║
-// ║     lookahead_off  →  previous COMPLETED day's value only         ║
-// ║  4. ta.pivothigh/pivotlow  →  confirmed pivot_len bars LATER,    ║
-// ║     so the pivot is always in the confirmed past                  ║
-// ║  5. OB/FVG loop starts at i=2 →  all referenced bars are past    ║
-// ║  6. Liquidity sweep checks high[1]/low[1]/close[1]  →  prev bar  ║
-// ║  7. No barmerge.lookahead_on anywhere in the script               ║
+// ║  ANTI-LOOKAHEAD GUARANTEES                                        ║
+// ║  1. process_orders_on_close=false → entry fills at NEXT open     ║
+// ║  2. calc_on_every_tick=false      → only runs on confirmed bars   ║
+// ║  3. Sentiment: D1 RSI[1] via request.security(lookahead_off)     ║
+// ║  4. ta.pivothigh/pivotlow confirmed pivot_len bars in the past    ║
+// ║  5. OB/FVG loops start at i=2 — all bars are confirmed history   ║
+// ║  6. Liquidity sweep uses high[1]/low[1]/close[1] — prev bar only  ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
-//@version=5
+//@version=6
 strategy(
-     title                   = "ICT Sentinel — Backtest v1.0",
+     title                   = "ICT Sentinel — Backtest v2.0",
      overlay                 = true,
-     process_orders_on_close = false,  // ← KEY: fills at NEXT bar's open
-     calc_on_every_tick      = false,  // ← Only on confirmed (closed) bars
+     process_orders_on_close = false,
+     calc_on_every_tick      = false,
      initial_capital         = 10000,
      currency                = currency.USD,
      default_qty_type        = strategy.percent_of_equity,
      default_qty_value       = 1.0,
      commission_type         = strategy.commission.percent,
-     commission_value        = 0.02,   // 0.02% per fill ≈ 2-pip spread equivalent
-     slippage                = 2,      // 2 ticks slippage on fill
+     commission_value        = 0.02,
+     slippage                = 2,
      max_bars_back           = 500
      )
 
 // ─────────────────────────────────────────────────────────────────────
-// INPUTS
+// INPUTS  (group= replaces the old standalone "input group" syntax)
 // ─────────────────────────────────────────────────────────────────────
 
-// Kill Zones
-input group "=== Kill Zones (UTC) ==="
-bool  use_london     = input.bool(true,  "London Kill Zone")
-int   london_start   = input.int(7,      "London start (UTC)", minval=0, maxval=23)
-int   london_end     = input.int(10,     "London end   (UTC)", minval=0, maxval=23)
-bool  use_ny         = input.bool(true,  "New York Kill Zone")
-int   ny_start       = input.int(13,     "NY start (UTC)",     minval=0, maxval=23)
-int   ny_end         = input.int(16,     "NY end   (UTC)",     minval=0, maxval=23)
+bool   use_london    = input.bool  (true,   "London Kill Zone",                          group="Kill Zones (UTC)")
+int    london_start  = input.int   (7,      "London start hour (UTC)",  minval=0, maxval=23, group="Kill Zones (UTC)")
+int    london_end    = input.int   (10,     "London end   hour (UTC)",  minval=0, maxval=23, group="Kill Zones (UTC)")
+bool   use_ny        = input.bool  (true,   "New York Kill Zone",                        group="Kill Zones (UTC)")
+int    ny_start      = input.int   (13,     "NY start hour (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
+int    ny_end        = input.int   (16,     "NY end   hour (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
 
-// Sentiment proxy
-input group "=== Sentiment Proxy (replaces myfxbook for backtest) ==="
-string sent_source   = input.string("D1 RSI",  "Proxy source",
-                         options=["D1 RSI", "W1 RSI"],
-                         tooltip="Uses higher-timeframe RSI as retail sentiment proxy.\nRetail crowds extremes → we fade them.\nReplace with COT data for more accuracy (see README).")
-float  sent_long_lv  = input.float(65.0, "Retail 'majority long'  threshold  (RSI ≥ X → SHORT bias)",  minval=51, maxval=90)
-float  sent_short_lv = input.float(35.0, "Retail 'majority short' threshold  (RSI ≤ X → LONG  bias)",  minval=10, maxval=49)
+string sent_source   = input.string("D1 RSI", "Proxy source",           options=["D1 RSI","W1 RSI"],
+                         tooltip="D1 RSI mimics daily retail sentiment. RSI > threshold = retail majority long = SHORT bias.",
+                         group="Sentiment Proxy")
+float  sent_long_lv  = input.float (65.0,   "Retail majority LONG  (RSI ≥ X → SHORT bias)", minval=51, maxval=90, group="Sentiment Proxy")
+float  sent_short_lv = input.float (35.0,   "Retail majority SHORT (RSI ≤ X → LONG  bias)", minval=10, maxval=49, group="Sentiment Proxy")
 
-// Liquidity
-input group "=== Liquidity Sweeps ==="
-int   pivot_len      = input.int(5,    "Pivot strength (bars each side)", minval=2, maxval=20)
-float equal_pips     = input.float(3.0,"Equal level tolerance (pips)",   minval=0.5)
+int    pivot_len     = input.int   (5,      "Pivot strength (bars each side)", minval=2, maxval=20, group="Liquidity Sweeps")
+float  equal_pips    = input.float (3.0,    "Equal level tolerance (pips)",    minval=0.5,          group="Liquidity Sweeps")
 
-// Order Blocks
-input group "=== Order Blocks ==="
-int   ob_lookback    = input.int(30,   "OB lookback (bars)",    minval=5, maxval=100)
-float ob_min_body    = input.float(5.0,"Min OB body (pips)",    minval=1.0)
+int    ob_lookback   = input.int   (30,     "OB lookback (bars)",  minval=5, maxval=100, group="Order Blocks")
+float  ob_min_body   = input.float (5.0,    "Min OB body (pips)",  minval=1.0,           group="Order Blocks")
 
-// Fair Value Gaps
-input group "=== Fair Value Gaps ==="
-int   fvg_lookback   = input.int(30,   "FVG lookback (bars)",   minval=5, maxval=100)
-float fvg_min_size   = input.float(3.0,"Min FVG size (pips)",   minval=0.5)
+int    fvg_lookback  = input.int   (30,     "FVG lookback (bars)", minval=5, maxval=100, group="Fair Value Gaps")
+float  fvg_min_size  = input.float (3.0,    "Min FVG size (pips)", minval=0.5,           group="Fair Value Gaps")
 
-// Quality Control
-input group "=== Quality Control ==="
-int   min_quality    = input.int(70,     "Min quality score to trade (0-100)",    minval=50, maxval=100,
-                         tooltip="Score = sum of: Sweep(25) + Strong Sentiment(20) + Kill Zone(15) + OB entry(20) + HTF trend(20).\n70+ = at least 3-4 factors aligned.")
-int   max_wk_trades  = input.int(6,      "Max trades per calendar week",          minval=1,  maxval=20)
-float strong_sent    = input.float(70.0, "Strong sentiment threshold (%)",        minval=51, maxval=95,
-                         tooltip="Above this = +20 quality points. Basic threshold (65%) gives 0 bonus points.")
-string htf_tf        = input.string("240","HTF trend timeframe (mins)",           options=["60","240","1D"],
-                         tooltip="H1=60, H4=240. HTF EMA must slope in bias direction for +20 points.")
+int    min_quality   = input.int   (70,     "Min quality score (0-100)",     minval=50, maxval=100,
+                         tooltip="Sweep(25)+StrongSent(20)+KillZone(15)+OB(20)+HTF(20). Score ≥70 needed to trade.",
+                         group="Quality Control")
+int    max_wk_trades = input.int   (6,      "Max trades per week",           minval=1,  maxval=20, group="Quality Control")
+float  strong_sent   = input.float (70.0,   "Strong sentiment threshold (%)", minval=51, maxval=95,
+                         tooltip="RSI at or beyond this = +20 quality points.",
+                         group="Quality Control")
+string htf_tf        = input.string("240",  "HTF trend timeframe",           options=["60","240","1D"],
+                         tooltip="H1=60, H4=240. HTF EMA slope must agree with bias for +20 pts.",
+                         group="Quality Control")
 
-// Risk / Trade
-input group "=== Risk & Trade ==="
-float fixed_sl_pips  = input.float(20.0,"Fallback SL (pips) when no OB/FVG zone",minval=5)
-float min_rr         = input.float(1.5, "Minimum Risk:Reward ratio",             minval=1.0)
-bool  use_trail      = input.bool(true,  "Enable trailing stop")
-float trail_pips     = input.float(15.0,"Trailing offset (pips)",                minval=3)
-int   max_trades     = input.int(3,      "Max open positions at once",            minval=1)
+float  fixed_sl_pips = input.float (20.0,   "Fallback SL pips (no OB/FVG)", minval=5,  group="Risk and Trade")
+float  min_rr        = input.float (1.5,    "Minimum Risk:Reward",           minval=1.0, group="Risk and Trade")
+bool   use_trail     = input.bool  (true,   "Enable trailing stop",                      group="Risk and Trade")
+float  trail_pips    = input.float (15.0,   "Trailing offset (pips)",        minval=3,  group="Risk and Trade")
+int    max_trades    = input.int   (3,      "Max open positions at once",    minval=1,  group="Risk and Trade")
 
 // ─────────────────────────────────────────────────────────────────────
-// PIP SIZE  (auto-detects pair type)
+// PIP SIZE
 // ─────────────────────────────────────────────────────────────────────
 float pip = syminfo.mintick *
-     (str.contains(syminfo.ticker,"JPY")  ? 100 :
-      str.contains(syminfo.ticker,"XAU")  ? 10  :
-      str.contains(syminfo.ticker,"XAG")  ? 10  : 10)
+     (str.contains(syminfo.ticker, "JPY") ? 100 :
+      str.contains(syminfo.ticker, "XAU") ? 10  :
+      str.contains(syminfo.ticker, "XAG") ? 10  : 10)
 
 // ─────────────────────────────────────────────────────────────────────
-// KILL ZONE CHECK
+// KILL ZONE
 // ─────────────────────────────────────────────────────────────────────
-int utcH = hour(time, "UTC")
-bool inKZ = (use_london and utcH >= london_start and utcH < london_end) or
-             (use_ny     and utcH >= ny_start     and utcH < ny_end)
+int  utcH  = hour(time, "UTC")
+bool inKZ  = (use_london and utcH >= london_start and utcH < london_end) or
+              (use_ny     and utcH >= ny_start     and utcH < ny_end)
 
-// Kill zone background
-bgcolor(inKZ and use_london and utcH >= london_start and utcH < london_end ?
-        color.new(color.blue, 90)   : na, title="London KZ")
-bgcolor(inKZ and use_ny and utcH >= ny_start and utcH < ny_end ?
-        color.new(color.orange, 90) : na, title="NY KZ")
+bgcolor(use_london and utcH >= london_start and utcH < london_end ? color.new(color.blue,   90) : na, title="London KZ")
+bgcolor(use_ny     and utcH >= ny_start     and utcH < ny_end     ? color.new(color.orange, 90) : na, title="NY KZ")
 
 // ─────────────────────────────────────────────────────────────────────
-// SENTIMENT PROXY — ANTI-LOOKAHEAD
+// SENTIMENT PROXY — D1 RSI shifted one bar back (strictly past data)
 // ─────────────────────────────────────────────────────────────────────
-// request.security with lookahead_off means we see the value that was
-// available at the close of the PREVIOUS higher-timeframe bar.
-// The [1] inside the function call shifts one MORE HTF bar back,
-// so we are always using a FULLY COMPLETED and historical RSI value.
-//
-// Timeline example (running on M15 chart):
-//   Monday 09:00 bar  →  d1_rsi = Friday's D1 RSI (confirmed, past)
-//   Tuesday 14:30 bar →  d1_rsi = Monday's D1 RSI  (confirmed, past)
-// ─────────────────────────────────────────────────────────────────────
-string tf = sent_source == "W1 RSI" ? "W" : "D"
+string htf_sent = sent_source == "W1 RSI" ? "W" : "D"
 
-float d1_rsi = request.security(
-     syminfo.tickerid,
-     tf,
-     ta.rsi(close, 14)[1],           // [1] = previous HTF bar's RSI, not current
-     lookahead = barmerge.lookahead_off  // ← never peek at future HTF bars
-     )
+float d1_rsi = request.security(syminfo.tickerid, htf_sent,
+                    ta.rsi(close, 14)[1],
+                    lookahead = barmerge.lookahead_off)
 
-// sentBias: +1 = LONG bias (retail majority short, fade them)
-//           -1 = SHORT bias (retail majority long, fade them)
-//            0 = neutral, no trade
 int sentBias = d1_rsi <= sent_short_lv ? 1 : d1_rsi >= sent_long_lv ? -1 : 0
 
 // ─────────────────────────────────────────────────────────────────────
-// LIQUIDITY LEVELS & SWEEPS — ANTI-LOOKAHEAD
+// LIQUIDITY LEVELS & SWEEPS
 // ─────────────────────────────────────────────────────────────────────
-// ta.pivothigh(high, left, right) returns a value pivot_len bars AFTER
-// the pivot candle is formed — i.e., it is always confirmed history.
-// We store these in vars to keep the most recent BSL/SSL level.
-// ─────────────────────────────────────────────────────────────────────
-float ph = ta.pivothigh(high, pivot_len, pivot_len)  // confirmed pivot_len bars ago
+float ph = ta.pivothigh(high, pivot_len, pivot_len)
 float pl = ta.pivotlow (low,  pivot_len, pivot_len)
 
-var float bsl_level = na  // Buy-Side Liquidity  (most recent equal high)
-var float ssl_level = na  // Sell-Side Liquidity (most recent equal low)
+var float bsl_level = na
+var float ssl_level = na
 
 if not na(ph)
     bsl_level := ph
 if not na(pl)
     ssl_level := pl
 
-// Sweep detection — uses [1] (previous bar) so the sweep bar is CONFIRMED CLOSED.
-// A sweep = wick past the level, body closes back the other side (stop hunt).
 bool bsl_swept = not na(bsl_level) and high[1] > bsl_level and close[1] < bsl_level
 bool ssl_swept = not na(ssl_level) and low[1]  < ssl_level and close[1] > ssl_level
 
-// Visual markers for sweeps
 plotshape(bsl_swept, "BSL Swept", shape.triangledown, location.abovebar,
-          color.new(color.red, 0), size=size.small, offset=-1)
+          color.new(color.red,   0), size=size.small, offset=-1)
 plotshape(ssl_swept, "SSL Swept", shape.triangleup,   location.belowbar,
           color.new(color.green, 0), size=size.small, offset=-1)
 
 // ─────────────────────────────────────────────────────────────────────
-// ORDER BLOCK DETECTION — ANTI-LOOKAHEAD
-// ─────────────────────────────────────────────────────────────────────
-// Scans past bars (i=2 minimum so all bars are in confirmed history).
-// For each past candle, checks if subsequent past bars confirmed an impulse,
-// and if current price is now retracing into that OB zone.
+// ORDER BLOCK DETECTION
 // ─────────────────────────────────────────────────────────────────────
 bool  bullOBFound = false
 bool  bearOBFound = false
@@ -177,14 +133,13 @@ float bearOB_bot  = na
 
 if bar_index > ob_lookback + 5
     for i = 2 to ob_lookback
-        float o_i   = open[i]
-        float c_i   = close[i]
-        float h_i   = high[i]
-        float l_i   = low[i]
-        float body  = math.abs(c_i - o_i) / pip
+        float o_i  = open[i]
+        float c_i  = close[i]
+        float h_i  = high[i]
+        float l_i  = low[i]
+        float body = math.abs(c_i - o_i) / pip
 
         if body >= ob_min_body
-            // ── BULLISH OB: bearish candle before an up-impulse ─────────────
             if c_i < o_i and not bullOBFound
                 bool impulse_up = false
                 for j = 1 to math.min(i - 1, 5)
@@ -192,13 +147,11 @@ if bar_index > ob_lookback + 5
                         impulse_up := true
                         break
                 if impulse_up
-                    // Is current price retracing INTO this OB zone?
                     if close >= c_i - 3 * pip and close <= o_i + 3 * pip
                         bullOBFound := true
                         bullOB_top  := o_i
                         bullOB_bot  := c_i
 
-            // ── BEARISH OB: bullish candle before a down-impulse ────────────
             if c_i > o_i and not bearOBFound
                 bool impulse_dn = false
                 for j = 1 to math.min(i - 1, 5)
@@ -212,10 +165,7 @@ if bar_index > ob_lookback + 5
                         bearOB_bot  := o_i
 
 // ─────────────────────────────────────────────────────────────────────
-// FAIR VALUE GAP DETECTION — ANTI-LOOKAHEAD
-// ─────────────────────────────────────────────────────────────────────
-// Starts at i=2 so prevHigh = high[i+1] and nextLow = low[i-1] are
-// both past bars relative to the current bar.
+// FAIR VALUE GAP DETECTION
 // ─────────────────────────────────────────────────────────────────────
 bool  bullFVGFound = false
 bool  bearFVGFound = false
@@ -226,22 +176,19 @@ float bearFVG_bot  = na
 
 if bar_index > fvg_lookback + 5
     for i = 2 to fvg_lookback
-        float prevHigh = high[i + 1]   // bar before the middle candle
+        float prevHigh = high[i + 1]
         float prevLow  = low [i + 1]
-        float nextHigh = high[i - 1]   // bar after  the middle candle (i-1 >= 1)
+        float nextHigh = high[i - 1]
         float nextLow  = low [i - 1]
 
-        // ── Bullish FVG: gap going upward (nextLow > prevHigh) ─────────────
         if not bullFVGFound and nextLow > prevHigh
             float gap = (nextLow - prevHigh) / pip
             if gap >= fvg_min_size
-                // Price retracing back into the FVG?
                 if close >= prevHigh and close <= nextLow
                     bullFVGFound := true
                     bullFVG_top  := nextLow
                     bullFVG_bot  := prevHigh
 
-        // ── Bearish FVG: gap going downward (nextHigh < prevLow) ───────────
         if not bearFVGFound and nextHigh < prevLow
             float gap = (prevLow - nextHigh) / pip
             if gap >= fvg_min_size
@@ -251,108 +198,96 @@ if bar_index > fvg_lookback + 5
                     bearFVG_bot  := nextHigh
 
 // ─────────────────────────────────────────────────────────────────────
-// HTF TREND CONFIRMATION (H4 by default)
-// Uses request.security with lookahead_off and [1] — confirmed past HTF bar.
+// HTF TREND CONFIRMATION
 // ─────────────────────────────────────────────────────────────────────
 float htf_ema_now  = request.security(syminfo.tickerid, htf_tf,
-                         ta.ema(close, 20)[0], lookahead=barmerge.lookahead_off)
+                         ta.ema(close, 20)[0], lookahead = barmerge.lookahead_off)
 float htf_ema_prev = request.security(syminfo.tickerid, htf_tf,
-                         ta.ema(close, 20)[1], lookahead=barmerge.lookahead_off)
+                         ta.ema(close, 20)[1], lookahead = barmerge.lookahead_off)
 bool htf_bullish   = htf_ema_now > htf_ema_prev
 bool htf_bearish   = htf_ema_now < htf_ema_prev
 
 // ─────────────────────────────────────────────────────────────────────
 // QUALITY SCORE (0-100)
-// Only trades with score >= min_quality are taken.
-// Scoring:
-//   25 — Liquidity sweep confirmed
-//   20 — Sentiment extreme is STRONG (above strong_sent threshold)
-//   15 — Currently in a kill zone
-//   20 — Price at Order Block (OB > FVG in quality)
-//   20 — HTF trend agrees with bias
 // ─────────────────────────────────────────────────────────────────────
 int score_long  = 0
 int score_short = 0
 
-// +25: sweep
-if ssl_swept  then score_long  := score_long  + 25
-if bsl_swept  then score_short := score_short + 25
+if ssl_swept
+    score_long := score_long + 25
+if bsl_swept
+    score_short := score_short + 25
 
-// +20: strong sentiment (using the same d1_rsi proxy)
-if d1_rsi <= (100 - strong_sent) then score_long  := score_long  + 20
-if d1_rsi >=          strong_sent then score_short := score_short + 20
+if d1_rsi <= (100.0 - strong_sent)
+    score_long := score_long + 20
+if d1_rsi >= strong_sent
+    score_short := score_short + 20
 
-// +15: kill zone
-if inKZ then
+if inKZ
     score_long  := score_long  + 15
     score_short := score_short + 15
 
-// +20: at Order Block (bonus vs FVG-only)
-if bullOBFound  then score_long  := score_long  + 20
-else if bullFVGFound then score_long := score_long + 10  // FVG = half points
-if bearOBFound  then score_short := score_short + 20
-else if bearFVGFound then score_short := score_short + 10
+if bullOBFound
+    score_long := score_long + 20
+else if bullFVGFound
+    score_long := score_long + 10
 
-// +20: HTF trend agrees
-if htf_bullish  then score_long  := score_long  + 20
-if htf_bearish  then score_short := score_short + 20
+if bearOBFound
+    score_short := score_short + 20
+else if bearFVGFound
+    score_short := score_short + 10
+
+if htf_bullish
+    score_long  := score_long  + 20
+if htf_bearish
+    score_short := score_short + 20
 
 bool qualityL = score_long  >= min_quality
 bool qualityS = score_short >= min_quality
 
 // ─────────────────────────────────────────────────────────────────────
 // WEEKLY TRADE CAP
-// Count strategy entries this week using a rolling sum.
-// dayofweek(time) = 1 (Monday) through 5 (Friday) in Pine.
-// We track a simple counter that resets each Monday.
 // ─────────────────────────────────────────────────────────────────────
-bool   is_monday     = dayofweek(time) == 2   // Pine: 1=Sun,2=Mon,...7=Sat
-var int week_trades  = 0
-var int prev_total   = 0
+var int  week_trades = 0
+var int  prev_closed = 0
 
-if is_monday and dayofweek(time[1]) != 2
-    week_trades := 0   // Reset on Monday
+if dayofweek(time) == 2 and dayofweek(time[1]) != 2
+    week_trades := 0
 
-int new_fills = strategy.closedtrades - prev_total + strategy.opentrades
-week_trades   := week_trades + math.max(0, strategy.closedtrades - prev_total)
-prev_total    := strategy.closedtrades
+int newly_closed = strategy.closedtrades - prev_closed
+if newly_closed > 0
+    week_trades := week_trades + newly_closed
+prev_closed := strategy.closedtrades
 
 bool under_week_cap = (strategy.opentrades + week_trades) < max_wk_trades
 
 // ─────────────────────────────────────────────────────────────────────
 // ENTRY CONDITIONS
 // ─────────────────────────────────────────────────────────────────────
-// All inputs are confirmed, closed-bar data.
-// strategy.entry() with process_orders_on_close=false fills NEXT bar open.
-// ─────────────────────────────────────────────────────────────────────
 bool hasEntry     = strategy.opentrades < max_trades and under_week_cap
-bool entryStructL = bullOBFound or bullFVGFound   // at least one ICT zone
+bool entryStructL = bullOBFound or bullFVGFound
 bool entryStructS = bearOBFound or bearFVGFound
 
 bool longCond  = inKZ and sentBias ==  1 and ssl_swept and entryStructL and hasEntry and qualityL
 bool shortCond = inKZ and sentBias == -1 and bsl_swept and entryStructS and hasEntry and qualityS
 
-// ── SL / TP calculation ───────────────────────────────────────────────
-// SL is placed below the OB/FVG zone bottom (+ 5 pip buffer).
-// TP = SL distance × Min R:R.
-// These are calculated from current close — entry fills at next open,
-// which introduces a small price difference; this is realistic (slippage).
-
-float sl_pips_long  = bullOBFound ? (close - bullOB_bot) / pip + 5 :
+// ─────────────────────────────────────────────────────────────────────
+// SL / TP CALCULATION
+// ─────────────────────────────────────────────────────────────────────
+float sl_pips_long  = bullOBFound  ? (close - bullOB_bot)  / pip + 5 :
                       bullFVGFound ? (close - bullFVG_bot) / pip + 5 : fixed_sl_pips
 float tp_pips_long  = sl_pips_long * min_rr
 int   sl_ticks_long = math.round(sl_pips_long * pip / syminfo.mintick)
 int   tp_ticks_long = math.round(tp_pips_long * pip / syminfo.mintick)
 
-float sl_pips_short = bearOBFound ? (bearOB_top - close) / pip + 5 :
-                      bearFVGFound ? (bearFVG_top - close) / pip + 5 : fixed_sl_pips
-float tp_pips_short = sl_pips_short * min_rr
+float sl_pips_short  = bearOBFound  ? (bearOB_top  - close) / pip + 5 :
+                       bearFVGFound ? (bearFVG_top - close) / pip + 5 : fixed_sl_pips
+float tp_pips_short  = sl_pips_short * min_rr
 int   sl_ticks_short = math.round(sl_pips_short * pip / syminfo.mintick)
 int   tp_ticks_short = math.round(tp_pips_short * pip / syminfo.mintick)
 
 int trail_ticks = math.round(trail_pips * pip / syminfo.mintick)
 
-// Sanity bounds: SL must be between 5 and 150 pips
 bool sl_valid_long  = sl_pips_long  >= 5 and sl_pips_long  <= 150
 bool sl_valid_short = sl_pips_short >= 5 and sl_pips_short <= 150
 
@@ -362,66 +297,79 @@ bool sl_valid_short = sl_pips_short >= 5 and sl_pips_short <= 150
 if longCond and sl_valid_long
     strategy.entry("Long", strategy.long, comment="ICT L")
     strategy.exit("Long Exit", "Long",
-         loss   = sl_ticks_long,
-         profit = tp_ticks_long,
+         loss         = sl_ticks_long,
+         profit       = tp_ticks_long,
          trail_offset = use_trail ? trail_ticks : na)
 
 if shortCond and sl_valid_short
     strategy.entry("Short", strategy.short, comment="ICT S")
     strategy.exit("Short Exit", "Short",
-         loss   = sl_ticks_short,
-         profit = tp_ticks_short,
+         loss         = sl_ticks_short,
+         profit       = tp_ticks_short,
          trail_offset = use_trail ? trail_ticks : na)
 
 // ─────────────────────────────────────────────────────────────────────
-// VISUAL: entry signal labels
+// ENTRY LABELS
 // ─────────────────────────────────────────────────────────────────────
 if longCond and sl_valid_long
     label.new(bar_index, low - 5 * pip,
               "LONG\n" + (bullOBFound ? "OB" : "FVG") + "\nSL:" +
               str.tostring(math.round(sl_pips_long, 1)) + "p",
-              color=color.new(color.teal, 20),
-              textcolor=color.white, style=label.style_label_up, size=size.small)
+              color     = color.new(color.teal,   20),
+              textcolor = color.white,
+              style     = label.style_label_up,
+              size      = size.small)
 
 if shortCond and sl_valid_short
     label.new(bar_index, high + 5 * pip,
               "SHORT\n" + (bearOBFound ? "OB" : "FVG") + "\nSL:" +
               str.tostring(math.round(sl_pips_short, 1)) + "p",
-              color=color.new(color.maroon, 20),
-              textcolor=color.white, style=label.style_label_down, size=size.small)
+              color     = color.new(color.maroon, 20),
+              textcolor = color.white,
+              style     = label.style_label_down,
+              size      = size.small)
 
 // BSL / SSL level lines
 plot(bsl_level, "BSL", color.new(color.red,   60), 1, plot.style_circles)
 plot(ssl_level, "SSL", color.new(color.green, 60), 1, plot.style_circles)
 
 // ─────────────────────────────────────────────────────────────────────
-// INFO TABLE (top-right corner)
+// INFO TABLE (top-right)
 // ─────────────────────────────────────────────────────────────────────
 var table info = table.new(position.top_right, 2, 7,
-     bgcolor=color.new(color.black, 75), border_width=1, frame_width=1)
+     bgcolor      = color.new(color.black, 75),
+     border_width = 1,
+     frame_width  = 1)
 
 if barstate.islast
-    table.cell(info, 0, 0, "ICT Sentinel BT",    text_color=color.white,  text_size=size.small)
-    table.cell(info, 1, 0, "Lookahead-free",      text_color=color.lime,   text_size=size.small)
-    table.cell(info, 0, 1, "Kill Zone",           text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 0, 0, "ICT Sentinel BT",  text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 0, "Lookahead-free",    text_color=color.lime,   text_size=size.small)
+
+    table.cell(info, 0, 1, "Kill Zone",         text_color=color.gray,   text_size=size.tiny)
     table.cell(info, 1, 1, inKZ ? "ACTIVE" : "off",
-               text_color=inKZ ? color.orange : color.gray,               text_size=size.tiny)
-    table.cell(info, 0, 2, "Sent Bias",           text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 2, sentBias ==  1 ? "LONG ▲" :
-                            sentBias == -1 ? "SHORT ▼" : "neutral",
-               text_color=sentBias == 1 ? color.lime : sentBias == -1 ? color.red : color.gray,
-               text_size=size.tiny)
-    table.cell(info, 0, 3, "D1 RSI",              text_color=color.gray,   text_size=size.tiny)
+               text_color = inKZ ? color.orange : color.gray,            text_size=size.tiny)
+
+    table.cell(info, 0, 2, "Sent Bias",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 2,
+               sentBias ==  1 ? "LONG  ▲" :
+               sentBias == -1 ? "SHORT ▼" : "neutral",
+               text_color = sentBias == 1 ? color.lime :
+                            sentBias ==-1 ? color.red  : color.gray,     text_size=size.tiny)
+
+    table.cell(info, 0, 3, "D1 RSI",            text_color=color.gray,   text_size=size.tiny)
     table.cell(info, 1, 3, str.tostring(math.round(d1_rsi, 1)),
-               text_color=color.white,             text_size=size.tiny)
-    table.cell(info, 0, 4, "Quality L/S",         text_color=color.gray,   text_size=size.tiny)
+               text_color=color.white,                                   text_size=size.tiny)
+
+    table.cell(info, 0, 4, "Quality L / S",     text_color=color.gray,   text_size=size.tiny)
     table.cell(info, 1, 4, str.tostring(score_long) + " / " + str.tostring(score_short),
-               text_color=color.yellow,            text_size=size.tiny)
-    table.cell(info, 0, 5, "Week trades",         text_color=color.gray,   text_size=size.tiny)
+               text_color=color.yellow,                                  text_size=size.tiny)
+
+    table.cell(info, 0, 5, "Week trades",        text_color=color.gray,   text_size=size.tiny)
     table.cell(info, 1, 5, str.tostring(week_trades) + " / " + str.tostring(max_wk_trades),
-               text_color=week_trades >= max_wk_trades ? color.red : color.lime,
-               text_size=size.tiny)
-    table.cell(info, 0, 6, "HTF trend",           text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 6, htf_bullish ? "▲ bull" : htf_bearish ? "▼ bear" : "flat",
-               text_color=htf_bullish ? color.lime : htf_bearish ? color.red : color.gray,
+               text_color = week_trades >= max_wk_trades ? color.red : color.lime, text_size=size.tiny)
+
+    table.cell(info, 0, 6, "HTF trend",          text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 6,
+               htf_bullish ? "▲ bullish" : htf_bearish ? "▼ bearish" : "flat",
+               text_color = htf_bullish ? color.lime : htf_bearish ? color.red : color.gray,
                text_size=size.tiny)
