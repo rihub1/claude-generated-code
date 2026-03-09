@@ -487,10 +487,10 @@ if pending_long  and (bar_index - bos_bar_long)  > bos_expire_bars
 if pending_short and (bar_index - bos_bar_short) > bos_expire_bars
     pending_short := false
 
-// Cancel if HTF bias flips strongly (RSI crosses back through 50 — full reversal, not a wobble)
-if d1_rsi > 50 and pending_long
+// Cancel pending if bias flips
+if not bias_long  and pending_long
     pending_long  := false
-if d1_rsi < 50 and pending_short
+if not bias_short and pending_short
     pending_short := false
 
 // ─────────────────────────────────────────────────────────────────────
