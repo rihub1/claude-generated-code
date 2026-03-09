@@ -41,8 +41,8 @@ int    ny_end        = input.int   (16,     "NY end   hour (UTC)",      minval=0
 string sent_source   = input.string("D1 RSI", "Proxy source",           options=["D1 RSI","W1 RSI"],
                          tooltip="D1 RSI mimics daily retail sentiment. RSI > threshold = retail majority long = SHORT bias.",
                          group="Sentiment Proxy")
-float  sent_long_lv  = input.float (65.0,   "Retail majority LONG  (RSI ≥ X → SHORT bias)", minval=51, maxval=90, group="Sentiment Proxy")
-float  sent_short_lv = input.float (35.0,   "Retail majority SHORT (RSI ≤ X → LONG  bias)", minval=10, maxval=49, group="Sentiment Proxy")
+float  sent_long_lv  = input.float (60.0,   "Retail majority LONG  (RSI ≥ X → SHORT bias)", minval=51, maxval=90, group="Sentiment Proxy")
+float  sent_short_lv = input.float (40.0,   "Retail majority SHORT (RSI ≤ X → LONG  bias)", minval=10, maxval=49, group="Sentiment Proxy")
 
 int    pivot_len     = input.int   (5,      "Pivot strength (bars each side)", minval=2, maxval=20, group="Liquidity Sweeps")
 float  equal_pips    = input.float (3.0,    "Equal level tolerance (pips)",    minval=0.5,          group="Liquidity Sweeps")
@@ -53,7 +53,7 @@ float  ob_min_body   = input.float (5.0,    "Min OB body (pips)",  minval=1.0,  
 int    fvg_lookback  = input.int   (30,     "FVG lookback (bars)", minval=5, maxval=100, group="Fair Value Gaps")
 float  fvg_min_size  = input.float (3.0,    "Min FVG size (pips)", minval=0.5,           group="Fair Value Gaps")
 
-int    min_quality   = input.int   (70,     "Min quality score (0-100)",     minval=50, maxval=100,
+int    min_quality   = input.int   (60,     "Min quality score (0-100)",     minval=50, maxval=100,
                          tooltip="Sweep(25)+StrongSent(20)+KillZone(15)+OB(20)+HTF(20). Score ≥70 needed to trade.",
                          group="Quality Control")
 int    max_wk_trades = input.int   (6,      "Max trades per week",           minval=1,  maxval=20, group="Quality Control")
@@ -64,11 +64,15 @@ string htf_tf        = input.string("240",  "HTF trend timeframe",           opt
                          tooltip="H1=60, H4=240. HTF EMA slope must agree with bias for +20 pts.",
                          group="Quality Control")
 
-float  fixed_sl_pips = input.float (20.0,   "Fallback SL pips (no OB/FVG)", minval=5,  group="Risk and Trade")
-float  min_rr        = input.float (1.5,    "Minimum Risk:Reward",           minval=1.0, group="Risk and Trade")
-bool   use_trail     = input.bool  (true,   "Enable trailing stop",                      group="Risk and Trade")
-float  trail_pips    = input.float (15.0,   "Trailing offset (pips)",        minval=3,  group="Risk and Trade")
-int    max_trades    = input.int   (3,      "Max open positions at once",    minval=1,  group="Risk and Trade")
+float  fixed_sl_pips   = input.float (20.0,  "Fallback SL pips (no OB/FVG)",        minval=5,   group="Risk and Trade")
+float  min_rr          = input.float (2.0,   "Full TP target (R:R)",                 minval=1.0, group="Risk and Trade")
+bool   use_partial_tp  = input.bool  (true,  "Take 50% profit at 1:1 R:R",                       group="Risk and Trade",
+                           tooltip="Closes half the position when trade is up 1× the risk. Locks in profit, lets rest run.")
+bool   use_breakeven   = input.bool  (true,  "Move SL to breakeven after partial TP",             group="Risk and Trade",
+                           tooltip="Once 50% is closed at 1:1, stop loss moves to entry price. Worst case = scratch trade.")
+bool   use_session_exit = input.bool (true,  "Close trade at end of kill zone",                   group="Risk and Trade",
+                           tooltip="If trade is still open when the kill zone ends, close it. Avoids overnight drift.")
+int    max_trades      = input.int   (3,     "Max open positions at once",           minval=1,   group="Risk and Trade")
 
 // ─────────────────────────────────────────────────────────────────────
 // PIP SIZE
@@ -276,37 +280,87 @@ bool shortCond = inKZ and sentBias == -1 and bsl_swept and entryStructS and hasE
 // ─────────────────────────────────────────────────────────────────────
 float sl_pips_long  = bullOBFound  ? (close - bullOB_bot)  / pip + 5 :
                       bullFVGFound ? (close - bullFVG_bot) / pip + 5 : fixed_sl_pips
-float tp_pips_long  = sl_pips_long * min_rr
-int   sl_ticks_long = math.round(sl_pips_long * pip / syminfo.mintick)
-int   tp_ticks_long = math.round(tp_pips_long * pip / syminfo.mintick)
+float sl_pips_short = bearOBFound  ? (bearOB_top  - close) / pip + 5 :
+                      bearFVGFound ? (bearFVG_top - close) / pip + 5 : fixed_sl_pips
 
-float sl_pips_short  = bearOBFound  ? (bearOB_top  - close) / pip + 5 :
-                       bearFVGFound ? (bearFVG_top - close) / pip + 5 : fixed_sl_pips
-float tp_pips_short  = sl_pips_short * min_rr
-int   sl_ticks_short = math.round(sl_pips_short * pip / syminfo.mintick)
-int   tp_ticks_short = math.round(tp_pips_short * pip / syminfo.mintick)
+// Full TP at min_rr  |  Partial TP (50%) at 1:1
+float tp_full_long   = sl_pips_long  * min_rr
+float tp_half_long   = sl_pips_long  * 1.0       // 1:1 for the partial close
+float tp_full_short  = sl_pips_short * min_rr
+float tp_half_short  = sl_pips_short * 1.0
 
-int trail_ticks = math.round(trail_pips * pip / syminfo.mintick)
+int sl_ticks_long    = math.round(sl_pips_long  * pip / syminfo.mintick)
+int tp_ticks_long    = math.round(tp_full_long  * pip / syminfo.mintick)
+int tp_half_ticks_l  = math.round(tp_half_long  * pip / syminfo.mintick)
+
+int sl_ticks_short   = math.round(sl_pips_short * pip / syminfo.mintick)
+int tp_ticks_short   = math.round(tp_full_short * pip / syminfo.mintick)
+int tp_half_ticks_s  = math.round(tp_half_short * pip / syminfo.mintick)
 
 bool sl_valid_long  = sl_pips_long  >= 5 and sl_pips_long  <= 150
 bool sl_valid_short = sl_pips_short >= 5 and sl_pips_short <= 150
 
 // ─────────────────────────────────────────────────────────────────────
-// PLACE ORDERS
+// PLACE ORDERS — improved exit logic
 // ─────────────────────────────────────────────────────────────────────
 if longCond and sl_valid_long
     strategy.entry("Long", strategy.long, comment="ICT L")
-    strategy.exit("Long Exit", "Long",
-         loss         = sl_ticks_long,
-         profit       = tp_ticks_long,
-         trail_offset = use_trail ? trail_ticks : na)
+    if use_partial_tp
+        // Half closes at 1:1, half runs to full TP
+        strategy.exit("Long Half",  "Long", qty_percent=50, profit=tp_half_ticks_l, loss=sl_ticks_long)
+        strategy.exit("Long Final", "Long", qty_percent=50, profit=tp_ticks_long,   loss=sl_ticks_long)
+    else
+        strategy.exit("Long Exit", "Long", profit=tp_ticks_long, loss=sl_ticks_long)
 
 if shortCond and sl_valid_short
     strategy.entry("Short", strategy.short, comment="ICT S")
-    strategy.exit("Short Exit", "Short",
-         loss         = sl_ticks_short,
-         profit       = tp_ticks_short,
-         trail_offset = use_trail ? trail_ticks : na)
+    if use_partial_tp
+        strategy.exit("Short Half",  "Short", qty_percent=50, profit=tp_half_ticks_s, loss=sl_ticks_short)
+        strategy.exit("Short Final", "Short", qty_percent=50, profit=tp_ticks_short,  loss=sl_ticks_short)
+    else
+        strategy.exit("Short Exit", "Short", profit=tp_ticks_short, loss=sl_ticks_short)
+
+// ─────────────────────────────────────────────────────────────────────
+// BREAKEVEN — move SL to entry once first partial TP is hit
+// Checks if position size shrank (= partial TP was triggered)
+// ─────────────────────────────────────────────────────────────────────
+var float  be_entry_long  = na
+var float  be_entry_short = na
+var bool   be_done_long   = false
+var bool   be_done_short  = false
+
+// Track entry price when a new long opens
+if longCond and sl_valid_long
+    be_entry_long  := close
+    be_done_long   := false
+if shortCond and sl_valid_short
+    be_entry_short := close
+    be_done_short  := false
+
+if use_breakeven and use_partial_tp
+    // Long: once we're up >= 1× risk, move remaining stop to entry
+    if strategy.position_size > 0 and not be_done_long and not na(be_entry_long)
+        float profit_now = (close - be_entry_long) / pip
+        if profit_now >= sl_pips_long
+            strategy.exit("Long BE", "Long", stop=be_entry_long + syminfo.mintick)
+            be_done_long := true
+
+    // Short: once we're up >= 1× risk, move remaining stop to entry
+    if strategy.position_size < 0 and not be_done_short and not na(be_entry_short)
+        float profit_now = (be_entry_short - close) / pip
+        if profit_now >= sl_pips_short
+            strategy.exit("Short BE", "Short", stop=be_entry_short - syminfo.mintick)
+            be_done_short := true
+
+// ─────────────────────────────────────────────────────────────────────
+// SESSION EXIT — close any open trade when kill zone ends
+// This prevents ICT intraday setups from becoming accidental swing trades
+// ─────────────────────────────────────────────────────────────────────
+bool kz_just_ended = use_session_exit and not inKZ and
+     ((use_london and utcH == london_end) or (use_ny and utcH == ny_end))
+
+if kz_just_ended and strategy.position_size != 0
+    strategy.close_all(comment="KZ End")
 
 // ─────────────────────────────────────────────────────────────────────
 // ENTRY LABELS
