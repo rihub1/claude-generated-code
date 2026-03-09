@@ -40,10 +40,10 @@ int   ny_start      = input.int  (13,    "NY start (UTC)",      minval=0, maxval
 int   ny_end        = input.int  (16,    "NY end   (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
 
 // HTF Bias (D1 + H4) — Direction
-float d1_sent_long  = input.float(55.0,  "D1 RSI ≥ X  →  SHORT bias (retail majority long)",  minval=51, maxval=90, group="HTF Bias  (D1 + H4)")
-float d1_sent_short = input.float(45.0,  "D1 RSI ≤ X  →  LONG  bias (retail majority short)", minval=10, maxval=49, group="HTF Bias  (D1 + H4)")
+float d1_sent_long  = input.float(60.0,  "D1 RSI ≥ X  →  SHORT bias (retail majority long)",  minval=51, maxval=90, group="HTF Bias  (D1 + H4)")
+float d1_sent_short = input.float(40.0,  "D1 RSI ≤ X  →  LONG  bias (retail majority short)", minval=10, maxval=49, group="HTF Bias  (D1 + H4)")
 int   h4_ema_len    = input.int  (20,    "H4 trend EMA length",           minval=5,            group="HTF Bias  (D1 + H4)")
-bool  require_h4    = input.bool (true,  "Require H4 trend to agree",                          group="HTF Bias  (D1 + H4)",
+bool  require_h4    = input.bool (false, "Require H4 trend to agree",                          group="HTF Bias  (D1 + H4)",
                         tooltip="H4 EMA must slope in the same direction as D1 bias.\nIf unchecked, D1 bias alone is enough.")
 
 // H1 Structure (Order Blocks & FVGs identified on H1)
@@ -56,8 +56,8 @@ float h1_fvg_min     = input.float(3.0, "H1 FVG min size (pips)", minval=0.5,   
 int   m15_pivot_len  = input.int (3,    "M15 swing strength (bars each side)", minval=2, maxval=10, group="M15 Entry Triggers")
 int   sweep_window    = input.int (5,    "Sweep lookback window (M15 bars)",    minval=1, maxval=10, group="M15 Entry Triggers",
                         tooltip="How many past M15 bars to check for a liquidity sweep.\n5 bars = look back 75 minutes for a sweep.")
-int   bos_expire_bars = input.int (20,   "BOS valid window (M15 bars after BOS)",minval=4, maxval=96, group="M15 Entry Triggers",
-                        tooltip="How many M15 bars after a BOS to still look for a retrace entry.\n20 bars = 5 hours. After this window the pending setup expires.")
+int   bos_expire_bars = input.int (48,   "BOS valid window (M15 bars after BOS)",minval=4, maxval=192, group="M15 Entry Triggers",
+                        tooltip="How many M15 bars after a BOS to still look for a retrace entry.\n48 bars = 12 hours. After this window the pending setup expires.")
 
 // Risk & Exit — tiered fixed-amount sizing
 // £50–£99 = £5/trade  |  £100–£199 = £10/trade  |  £200–£499 = £20/trade  |  £500+ = hold at £20
@@ -477,10 +477,10 @@ if pending_long  and (bar_index - bos_bar_long)  > bos_expire_bars
 if pending_short and (bar_index - bos_bar_short) > bos_expire_bars
     pending_short := false
 
-// Cancel if HTF bias flips
-if not bias_long
+// Cancel if HTF bias flips strongly (RSI crosses back through 50 — full reversal, not a wobble)
+if d1_rsi > 50 and pending_long
     pending_long  := false
-if not bias_short
+if d1_rsi < 50 and pending_short
     pending_short := false
 
 // ─────────────────────────────────────────────────────────────────────
