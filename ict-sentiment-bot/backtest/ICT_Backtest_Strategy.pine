@@ -101,20 +101,20 @@ float risk_amount = (balance >= 200.0 ? 20.0 :
                                          5.0)
 
 // Risk tier label for the info table
-string risk_tier = balance >= 500.0 ? "£20  ⚠ re-evaluate" :
-                   balance >= 200.0 ? "£20 / trade" :
-                   balance >= 100.0 ? "£10 / trade" :
-                                      "£5  / trade"
+string risk_tier = (balance >= 500.0 ? "£20  ⚠ re-evaluate" :
+                    balance >= 200.0 ? "£20 / trade" :
+                    balance >= 100.0 ? "£10 / trade" :
+                                       "£5  / trade")
 
 // Approximate pip value per standard lot in GBP
 // Major pairs vs account currency (GBP): ~£7.87/pip (EURUSD at GBPUSD 1.27)
 // GBPUSD: £10/pip  |  GBPJPY: £10/pip  |  XAUUSD: ~£8/pip
-float pip_val_per_lot = str.contains(syminfo.ticker, "GBP") ? 10.0 :
-                        str.contains(syminfo.ticker, "XAU") ?  8.0 :
-                        str.contains(syminfo.ticker, "JPY") ?  7.5 : 7.87
+float pip_val_per_lot = (str.contains(syminfo.ticker, "GBP") ? 10.0 :
+                         str.contains(syminfo.ticker, "XAU") ?  8.0 :
+                         str.contains(syminfo.ticker, "JPY") ?  7.5 : 7.87)
 
 // Calculate lot size, rounded to nearest 0.01, clamped to 0.01–5.0
-f_lots(float sl_pips) =>
+float f_lots(float sl_pips) =>
     float raw  = risk_amount / math.max(sl_pips, 1.0) / pip_val_per_lot
     float lots = math.round(raw / 0.01) * 0.01
     math.max(0.01, math.min(5.0, lots))
@@ -422,14 +422,14 @@ bool structS = (in_d1_bear_ob or in_d1_bear_fvg or
                 m15_bearOB    or m15_bearFVG)
 
 // Best available zone label for entry labels and SL reference
-string best_zone_long  = in_d1_bull_ob ? "D1 OB"  : in_d1_bull_fvg ? "D1 FVG" :
-                         in_h4_bull_ob ? "H4 OB"  : in_h4_bull_fvg ? "H4 FVG" :
-                         in_h1_bull_ob ? "H1 OB"  : in_h1_bull_fvg ? "H1 FVG" :
-                         m15_bullOB    ? "M15 OB" : "M15 FVG"
-string best_zone_short = in_d1_bear_ob ? "D1 OB"  : in_d1_bear_fvg ? "D1 FVG" :
-                         in_h4_bear_ob ? "H4 OB"  : in_h4_bear_fvg ? "H4 FVG" :
-                         in_h1_bear_ob ? "H1 OB"  : in_h1_bear_fvg ? "H1 FVG" :
-                         m15_bearOB    ? "M15 OB" : "M15 FVG"
+string best_zone_long  = (in_d1_bull_ob ? "D1 OB"  : in_d1_bull_fvg ? "D1 FVG" :
+                          in_h4_bull_ob ? "H4 OB"  : in_h4_bull_fvg ? "H4 FVG" :
+                          in_h1_bull_ob ? "H1 OB"  : in_h1_bull_fvg ? "H1 FVG" :
+                          m15_bullOB    ? "M15 OB" : "M15 FVG")
+string best_zone_short = (in_d1_bear_ob ? "D1 OB"  : in_d1_bear_fvg ? "D1 FVG" :
+                          in_h4_bear_ob ? "H4 OB"  : in_h4_bear_fvg ? "H4 FVG" :
+                          in_h1_bear_ob ? "H1 OB"  : in_h1_bear_fvg ? "H1 FVG" :
+                          m15_bearOB    ? "M15 OB" : "M15 FVG")
 
 
 // ─────────────────────────────────────────────────────────────────────
@@ -649,11 +649,11 @@ if in_h1_bear_ob
 var table info = table.new(position.top_right, 2, 12,
      bgcolor=color.new(color.black, 75), border_width=1, frame_width=1)
 
-string sent_label = d1_bias == 1  ? "Retail SHORT → we LONG"  :
-                    d1_bias == -1 ? "Retail LONG  → we SHORT" : "No extreme — skip"
+string sent_label = (d1_bias == 1  ? "Retail SHORT → we LONG"  :
+                     d1_bias == -1 ? "Retail LONG  → we SHORT" : "No extreme — skip")
 
-string pend_label = pending_long  ? "LONG pending ▲"  :
-                    pending_short ? "SHORT pending ▼" : "none"
+string pend_label = (pending_long  ? "LONG pending ▲"  :
+                     pending_short ? "SHORT pending ▼" : "none")
 
 table.cell(info, 0, 0,  "ICT Sentinel v5",  text_color=color.white,  text_size=size.small)
 table.cell(info, 1, 0,  "D1/H4/H1 zones",  text_color=color.lime,   text_size=size.small)
