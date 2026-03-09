@@ -465,8 +465,7 @@ if barstate.islast
     // ── ROW 1: Contrarian sentiment — FIRST FILTER ──────────────────────
     // RSI proxies myfxbook retail crowd positioning.
     // We trade AGAINST the retail majority — the same way institutions do.
-    string sent_label = d1_bias == 1  ? "Retail SHORT → we LONG"  :
-                        d1_bias == -1 ? "Retail LONG  → we SHORT" : "No extreme — skip"
+    string sent_label = d1_bias == 1 ? "Retail SHORT -> we LONG" : d1_bias == -1 ? "Retail LONG -> we SHORT" : "No extreme - skip"
     table.cell(info, 0, 1, "1 Sentiment",        text_color=color.yellow, text_size=size.tiny)
     table.cell(info, 1, 1, sent_label,
                text_color=d1_bias != 0 ? color.lime : color.gray,        text_size=size.tiny)
