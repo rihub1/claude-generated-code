@@ -186,20 +186,20 @@ float d1_c2 = request.security(syminfo.tickerid, "D", close[2], lookahead=barmer
 float d1_body1    = math.abs(d1_c1 - d1_o1)
 float d1_ob_top   = math.max(d1_o1, d1_c1)
 float d1_ob_bot   = math.min(d1_o1, d1_c1)
-bool  in_d1_bull_ob = d1_c1 < d1_o1 and d1_body1/pip >= h1_ob_min_body and
-                      close >= d1_ob_bot - 5*pip and close <= d1_ob_top + 5*pip
-bool  in_d1_bear_ob = d1_c1 > d1_o1 and d1_body1/pip >= h1_ob_min_body and
-                      close >= d1_ob_bot - 5*pip and close <= d1_ob_top + 5*pip
+bool  in_d1_bull_ob = (d1_c1 < d1_o1 and d1_body1/pip >= h1_ob_min_body and
+                       close >= d1_ob_bot - 5*pip and close <= d1_ob_top + 5*pip)
+bool  in_d1_bear_ob = (d1_c1 > d1_o1 and d1_body1/pip >= h1_ob_min_body and
+                       close >= d1_ob_bot - 5*pip and close <= d1_ob_top + 5*pip)
 
 // D1 FVG: 3-bar imbalance using confirmed D1 bars [2] and [1]
 float d1_bull_fvg_bot = d1_h2
 float d1_bull_fvg_top = d1_l1
-bool  in_d1_bull_fvg  = d1_l1 > d1_h2 and (d1_l1-d1_h2)/pip >= h1_fvg_min and
-                         close >= d1_bull_fvg_bot and close <= d1_bull_fvg_top
+bool  in_d1_bull_fvg  = (d1_l1 > d1_h2 and (d1_l1-d1_h2)/pip >= h1_fvg_min and
+                         close >= d1_bull_fvg_bot and close <= d1_bull_fvg_top)
 float d1_bear_fvg_top = d1_l2
 float d1_bear_fvg_bot = d1_h1
-bool  in_d1_bear_fvg  = d1_l2 > d1_h1 and (d1_l2-d1_h1)/pip >= h1_fvg_min and
-                         close >= d1_bear_fvg_bot and close <= d1_bear_fvg_top
+bool  in_d1_bear_fvg  = (d1_l2 > d1_h1 and (d1_l2-d1_h1)/pip >= h1_fvg_min and
+                         close >= d1_bear_fvg_bot and close <= d1_bear_fvg_top)
 
 // ─────────────────────────────────────────────────────────────────────
 // H4 ORDER BLOCKS & FVGs
@@ -217,20 +217,20 @@ float h4_c2 = request.security(syminfo.tickerid, "240", close[2], lookahead=barm
 float h4_body1    = math.abs(h4_c1 - h4_o1)
 float h4_ob_top   = math.max(h4_o1, h4_c1)
 float h4_ob_bot   = math.min(h4_o1, h4_c1)
-bool  in_h4_bull_ob = h4_c1 < h4_o1 and h4_body1/pip >= h1_ob_min_body and
-                      close >= h4_ob_bot - 3*pip and close <= h4_ob_top + 3*pip
-bool  in_h4_bear_ob = h4_c1 > h4_o1 and h4_body1/pip >= h1_ob_min_body and
-                      close >= h4_ob_bot - 3*pip and close <= h4_ob_top + 3*pip
+bool  in_h4_bull_ob = (h4_c1 < h4_o1 and h4_body1/pip >= h1_ob_min_body and
+                       close >= h4_ob_bot - 3*pip and close <= h4_ob_top + 3*pip)
+bool  in_h4_bear_ob = (h4_c1 > h4_o1 and h4_body1/pip >= h1_ob_min_body and
+                       close >= h4_ob_bot - 3*pip and close <= h4_ob_top + 3*pip)
 
 // H4 FVG
 float h4_bull_fvg_bot = h4_h2
 float h4_bull_fvg_top = h4_l1
-bool  in_h4_bull_fvg  = h4_l1 > h4_h2 and (h4_l1-h4_h2)/pip >= h1_fvg_min and
-                         close >= h4_bull_fvg_bot and close <= h4_bull_fvg_top
+bool  in_h4_bull_fvg  = (h4_l1 > h4_h2 and (h4_l1-h4_h2)/pip >= h1_fvg_min and
+                         close >= h4_bull_fvg_bot and close <= h4_bull_fvg_top)
 float h4_bear_fvg_top = h4_l2
 float h4_bear_fvg_bot = h4_h1
-bool  in_h4_bear_fvg  = h4_l2 > h4_h1 and (h4_l2-h4_h1)/pip >= h1_fvg_min and
-                         close >= h4_bear_fvg_bot and close <= h4_bear_fvg_top
+bool  in_h4_bear_fvg  = (h4_l2 > h4_h1 and (h4_l2-h4_h1)/pip >= h1_fvg_min and
+                         close >= h4_bear_fvg_bot and close <= h4_bear_fvg_top)
 
 // ─────────────────────────────────────────────────────────────────────
 // H1 ORDER BLOCKS & FVGs
@@ -243,10 +243,10 @@ float h1_close = request.security(syminfo.tickerid, "60", close[1], lookahead=ba
 float h1_body    = math.abs(h1_close - h1_open)
 float h1_ob_top  = math.max(h1_open, h1_close)
 float h1_ob_bot  = math.min(h1_open, h1_close)
-bool  in_h1_bull_ob = h1_close < h1_open and h1_body/pip >= h1_ob_min_body and
-                      close >= h1_ob_bot - 3*pip and close <= h1_ob_top + 3*pip
-bool  in_h1_bear_ob = h1_close > h1_open and h1_body/pip >= h1_ob_min_body and
-                      close >= h1_ob_bot - 3*pip and close <= h1_ob_top + 3*pip
+bool  in_h1_bull_ob = (h1_close < h1_open and h1_body/pip >= h1_ob_min_body and
+                       close >= h1_ob_bot - 3*pip and close <= h1_ob_top + 3*pip)
+bool  in_h1_bear_ob = (h1_close > h1_open and h1_body/pip >= h1_ob_min_body and
+                       close >= h1_ob_bot - 3*pip and close <= h1_ob_top + 3*pip)
 
 float h1_p2_high = request.security(syminfo.tickerid, "60", high[2], lookahead=barmerge.lookahead_off)
 float h1_p2_low  = request.security(syminfo.tickerid, "60", low [2], lookahead=barmerge.lookahead_off)
@@ -255,12 +255,12 @@ float h1_p0_low  = request.security(syminfo.tickerid, "60", low [1], lookahead=b
 
 float h1_bull_fvg_bot = h1_p2_high
 float h1_bull_fvg_top = h1_p0_low
-bool  in_h1_bull_fvg  = h1_p0_low > h1_p2_high and (h1_p0_low-h1_p2_high)/pip >= h1_fvg_min and
-                         close >= h1_bull_fvg_bot and close <= h1_bull_fvg_top
+bool  in_h1_bull_fvg  = (h1_p0_low > h1_p2_high and (h1_p0_low-h1_p2_high)/pip >= h1_fvg_min and
+                         close >= h1_bull_fvg_bot and close <= h1_bull_fvg_top)
 float h1_bear_fvg_top = h1_p2_low
 float h1_bear_fvg_bot = h1_p0_high
-bool  in_h1_bear_fvg  = h1_p2_low > h1_p0_high and (h1_p2_low-h1_p0_high)/pip >= h1_fvg_min and
-                         close >= h1_bear_fvg_bot and close <= h1_bear_fvg_top
+bool  in_h1_bear_fvg  = (h1_p2_low > h1_p0_high and (h1_p2_low-h1_p0_high)/pip >= h1_fvg_min and
+                         close >= h1_bear_fvg_bot and close <= h1_bear_fvg_top)
 
 // ─────────────────────────────────────────────────────────────────────
 // M15 LIQUIDITY LEVELS & SWEEP DETECTION
@@ -411,14 +411,14 @@ if bar_index > h1_fvg_lookback + 5
 // ─────────────────────────────────────────────────────────────────────
 // STRUCTURE CONFLUENCE — D1 > H4 > H1 > M15 priority
 // ─────────────────────────────────────────────────────────────────────
-bool structL = in_d1_bull_ob or in_d1_bull_fvg or
-               in_h4_bull_ob or in_h4_bull_fvg or
-               in_h1_bull_ob or in_h1_bull_fvg or
-               m15_bullOB    or m15_bullFVG
-bool structS = in_d1_bear_ob or in_d1_bear_fvg or
-               in_h4_bear_ob or in_h4_bear_fvg or
-               in_h1_bear_ob or in_h1_bear_fvg or
-               m15_bearOB    or m15_bearFVG
+bool structL = (in_d1_bull_ob or in_d1_bull_fvg or
+                in_h4_bull_ob or in_h4_bull_fvg or
+                in_h1_bull_ob or in_h1_bull_fvg or
+                m15_bullOB    or m15_bullFVG)
+bool structS = (in_d1_bear_ob or in_d1_bear_fvg or
+                in_h4_bear_ob or in_h4_bear_fvg or
+                in_h1_bear_ob or in_h1_bear_fvg or
+                m15_bearOB    or m15_bearFVG)
 
 // Best available zone label for entry labels and SL reference
 string best_zone_long  = in_d1_bull_ob ? "D1 OB"  : in_d1_bull_fvg ? "D1 FVG" :
