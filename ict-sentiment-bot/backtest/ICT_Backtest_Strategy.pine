@@ -134,8 +134,8 @@ f_lots(float sl_pips) =>
 // KILL ZONE  (M15 chart time)
 // ─────────────────────────────────────────────────────────────────────
 int  utcH = hour(time, "UTC")
-bool inKZ = (use_london and utcH >= london_start and utcH < london_end) or
-             (use_ny     and utcH >= ny_start     and utcH < ny_end)
+bool inKZ = ((use_london and utcH >= london_start and utcH < london_end) or
+              (use_ny     and utcH >= ny_start     and utcH < ny_end))
 
 bgcolor(use_london and utcH >= london_start and utcH < london_end ? color.new(color.blue,   92) : na, title="London KZ")
 bgcolor(use_ny     and utcH >= ny_start     and utcH < ny_end     ? color.new(color.orange, 92) : na, title="NY KZ")
