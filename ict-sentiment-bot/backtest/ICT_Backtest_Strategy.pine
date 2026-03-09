@@ -62,7 +62,7 @@ int   sweep_window   = input.int (5,    "Sweep lookback window (M15 bars)",    m
 float fixed_sl_pips  = input.float(15.0, "Fallback SL (pips, no OB/FVG)",    minval=5,              group="Risk and Exit")
 bool  use_be         = input.bool (true,  "Move SL to breakeven at 1:1",                            group="Risk and Exit")
 bool  use_partial    = input.bool (true,  "Close 50% at 2:1 R:R",                                   group="Risk and Exit")
-float full_rr        = input.float(3.0,  "Final TP (R:R on remaining 50%)",  minval=2.0,            group="Risk and Exit")
+float full_rr        = input.float(4.0,  "Final TP (R:R on remaining 70%)",  minval=2.0,            group="Risk and Exit")
 bool  session_exit   = input.bool (true,  "Close at end of kill zone",                              group="Risk and Exit",
                         tooltip="Forces close of any open trade when the kill zone session ends.\nPrevents ICT intraday trades becoming accidental overnight holds.")
 int   max_pos        = input.int  (2,    "Max open positions",                minval=1,              group="Risk and Exit")
@@ -384,16 +384,16 @@ int tp3r_ticks_s  = math.round(sl_pips_short * full_rr * pip / syminfo.mintick)
 if longCond
     strategy.entry("Long", strategy.long, qty=f_lots(sl_pips_long), comment="ICT L")
     if use_partial
-        strategy.exit("Long 2R",   "Long", qty_percent=50, profit=tp2r_ticks_l, loss=sl_ticks_l)
-        strategy.exit("Long Full", "Long", qty_percent=50, profit=tp3r_ticks_l, loss=sl_ticks_l)
+        strategy.exit("Long 2R",   "Long", qty_percent=30, profit=tp2r_ticks_l, loss=sl_ticks_l)
+        strategy.exit("Long Full", "Long", qty_percent=70, profit=tp3r_ticks_l, loss=sl_ticks_l)
     else
         strategy.exit("Long Exit", "Long", profit=tp3r_ticks_l, loss=sl_ticks_l)
 
 if shortCond
     strategy.entry("Short", strategy.short, qty=f_lots(sl_pips_short), comment="ICT S")
     if use_partial
-        strategy.exit("Short 2R",   "Short", qty_percent=50, profit=tp2r_ticks_s, loss=sl_ticks_s)
-        strategy.exit("Short Full", "Short", qty_percent=50, profit=tp3r_ticks_s, loss=sl_ticks_s)
+        strategy.exit("Short 2R",   "Short", qty_percent=30, profit=tp2r_ticks_s, loss=sl_ticks_s)
+        strategy.exit("Short Full", "Short", qty_percent=70, profit=tp3r_ticks_s, loss=sl_ticks_s)
     else
         strategy.exit("Short Exit", "Short", profit=tp3r_ticks_s, loss=sl_ticks_s)
 
