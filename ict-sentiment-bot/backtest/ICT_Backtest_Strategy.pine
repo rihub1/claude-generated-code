@@ -55,6 +55,8 @@ float h1_fvg_min     = input.float(3.0, "H1 FVG min size (pips)", minval=0.5,   
 // M15 Entry Triggers
 bool  require_bos    = input.bool (false, "Require BOS/CHoCH before entry (strict ICT flow)",  group="M15 Entry Triggers",
                         tooltip="ON = full sequential ICT flow: BOS in kill zone → retrace to zone → entry.\nOFF = simpler: bias + kill zone + in zone = entry. Use OFF first to validate zones.")
+bool  require_zone   = input.bool (false, "Require OB/FVG zone confirmation",                   group="M15 Entry Triggers",
+                        tooltip="ON = price must be inside a D1/H4/H1/M15 OB or FVG to enter.\nOFF = bias + kill zone alone triggers entry. Turn OFF to verify bias/KZ logic works.")
 int   m15_pivot_len  = input.int (3,    "M15 swing strength (bars each side)", minval=2, maxval=10, group="M15 Entry Triggers")
 int   sweep_window    = input.int (5,    "Sweep lookback window (M15 bars)",    minval=1, maxval=10, group="M15 Entry Triggers",
                         tooltip="How many past M15 bars to check for a liquidity sweep.\n5 bars = look back 75 minutes for a sweep.")
@@ -494,10 +496,12 @@ if d1_rsi < 50 and pending_short
 // ─────────────────────────────────────────────────────────────────────
 bool canTrade = strategy.opentrades < max_pos and under_cap
 
-// require_bos=true  → full ICT flow: BOS in KZ sets pending, then zone retrace = entry
-// require_bos=false → simplified:    bias + kill zone + in zone = entry (use for initial backtest)
-bool longCond  = canTrade and (require_bos ? (pending_long  and structL) : (bias_long  and inKZ and structL))
-bool shortCond = canTrade and (require_bos ? (pending_short and structS) : (bias_short and inKZ and structS))
+// Build up entry conditions layer by layer — toggle each filter on/off independently
+bool zone_ok_l = (not require_zone) or structL
+bool zone_ok_s = (not require_zone) or structS
+
+bool longCond  = canTrade and (require_bos ? (pending_long  and zone_ok_l) : (bias_long  and inKZ and zone_ok_l))
+bool shortCond = canTrade and (require_bos ? (pending_short and zone_ok_s) : (bias_short and inKZ and zone_ok_s))
 
 if longCond
     pending_long  := false
