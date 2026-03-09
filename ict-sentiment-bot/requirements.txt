@@ -1,0 +1,6 @@
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.1.0
+
+# Optional — only needed if myfxbook switches to full JS rendering:
+# selenium>=4.18.0

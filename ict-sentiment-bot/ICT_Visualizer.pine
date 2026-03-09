@@ -1,0 +1,222 @@
+// ============================================================
+// ICT Sentiment Visualizer  — TradingView Pine Script v5
+// ============================================================
+// Shows on your TradingView chart:
+//   • London / New York / Asian Kill Zone backgrounds
+//   • Bullish & Bearish Order Blocks (boxes)
+//   • Fair Value Gaps / Imbalances (boxes)
+//   • Swing High/Low liquidity levels (dashed lines)
+//   • Equal Highs / Equal Lows labels (liquidity pools)
+//
+// This mirrors what the MT5 EA looks for, so you can visually
+// validate setups before they trigger on your live account.
+// ============================================================
+//@version=5
+indicator("ICT Sentiment Visualizer", overlay=true, max_boxes_count=200, max_lines_count=200, max_labels_count=200)
+
+// ─────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────
+
+// Kill Zones
+kz_show         = input.bool(true,  "Show Kill Zones",             group="Kill Zones")
+kz_london_start = input.int (7,     "London Start (UTC hour)",     group="Kill Zones", minval=0, maxval=23)
+kz_london_end   = input.int (10,    "London End   (UTC hour)",     group="Kill Zones", minval=0, maxval=23)
+kz_ny_start     = input.int (13,    "New York Start (UTC hour)",   group="Kill Zones", minval=0, maxval=23)
+kz_ny_end       = input.int (16,    "New York End   (UTC hour)",   group="Kill Zones", minval=0, maxval=23)
+kz_asian_show   = input.bool(false, "Show Asian Kill Zone",        group="Kill Zones")
+kz_asian_start  = input.int (0,     "Asian Start (UTC hour)",      group="Kill Zones", minval=0, maxval=23)
+kz_asian_end    = input.int (3,     "Asian End   (UTC hour)",      group="Kill Zones", minval=0, maxval=23)
+
+// Order Blocks
+ob_show         = input.bool(true,  "Show Order Blocks",           group="Order Blocks")
+ob_lookback     = input.int (30,    "OB Lookback (bars)",          group="Order Blocks", minval=5)
+ob_min_body     = input.float(5.0,  "Min OB body (pips)",          group="Order Blocks", minval=0.5)
+
+// Fair Value Gaps
+fvg_show        = input.bool(true,  "Show Fair Value Gaps",        group="Fair Value Gaps")
+fvg_lookback    = input.int (50,    "FVG Lookback (bars)",         group="Fair Value Gaps", minval=5)
+fvg_min_size    = input.float(3.0,  "Min FVG size (pips)",         group="Fair Value Gaps", minval=0.5)
+
+// Liquidity
+liq_show        = input.bool(true,  "Show Liquidity Levels",       group="Liquidity")
+liq_lookback    = input.int (100,   "Liquidity Lookback (bars)",   group="Liquidity", minval=10)
+liq_equal_pips  = input.float(3.0,  "Equal level tolerance (pips)",group="Liquidity", minval=0.5)
+swing_strength  = input.int (3,     "Swing strength (bars each side)", group="Liquidity", minval=1)
+
+// ─────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────
+
+pip = syminfo.mintick * (str.contains(syminfo.ticker, "JPY") ? 100 :
+      str.contains(syminfo.ticker, "XAU") ? 10 :
+      str.contains(syminfo.ticker, "XAG") ? 10 : 10)
+
+utcHour = hour(time, "UTC")
+
+// ─────────────────────────────────────────────────────────────
+// KILL ZONES — background shading
+// ─────────────────────────────────────────────────────────────
+
+var color COL_LONDON = color.new(color.blue,   88)
+var color COL_NY     = color.new(color.orange, 88)
+var color COL_ASIAN  = color.new(color.purple, 90)
+
+in_london = kz_show and utcHour >= kz_london_start and utcHour < kz_london_end
+in_ny     = kz_show and utcHour >= kz_ny_start     and utcHour < kz_ny_end
+in_asian  = kz_asian_show and utcHour >= kz_asian_start and utcHour < kz_asian_end
+
+bgcolor(in_london ? COL_LONDON : na, title="London KZ")
+bgcolor(in_ny     ? COL_NY     : na, title="NY KZ")
+bgcolor(in_asian  ? COL_ASIAN  : na, title="Asian KZ")
+
+// Session labels on first bar of each kill zone
+var bool prev_london = false
+var bool prev_ny     = false
+var bool prev_asian  = false
+
+if in_london and not prev_london
+    label.new(bar_index, high, "🇬🇧 London KZ", color=color.new(color.blue,70),
+              textcolor=color.white, size=size.small, style=label.style_label_down)
+if in_ny and not prev_ny
+    label.new(bar_index, high, "🗽 NY KZ", color=color.new(color.orange,70),
+              textcolor=color.white, size=size.small, style=label.style_label_down)
+if in_asian and not prev_asian
+    label.new(bar_index, high, "🌏 Asian KZ", color=color.new(color.purple,70),
+              textcolor=color.white, size=size.small, style=label.style_label_down)
+
+prev_london := in_london
+prev_ny     := in_ny
+prev_asian  := in_asian
+
+// ─────────────────────────────────────────────────────────────
+// FAIR VALUE GAPS
+// ─────────────────────────────────────────────────────────────
+
+var color COL_BULL_FVG = color.new(color.green, 80)
+var color COL_BEAR_FVG = color.new(color.red,   80)
+
+if fvg_show and bar_index > 2
+    // Bullish FVG: candle[2].high < candle[0].low
+    fvg_gap_low  = high[2]
+    fvg_gap_high = low[0]
+    if fvg_gap_high > fvg_gap_low
+        gap_pips = (fvg_gap_high - fvg_gap_low) / pip
+        if gap_pips >= fvg_min_size
+            box.new(bar_index - 2, fvg_gap_high, bar_index + fvg_lookback,
+                    fvg_gap_low, border_color=color.green,
+                    bgcolor=COL_BULL_FVG, border_width=1)
+
+    // Bearish FVG: candle[2].low > candle[0].high
+    bfvg_gap_high = low[2]
+    bfvg_gap_low  = high[0]
+    if bfvg_gap_high > bfvg_gap_low
+        gap_pips2 = (bfvg_gap_high - bfvg_gap_low) / pip
+        if gap_pips2 >= fvg_min_size
+            box.new(bar_index - 2, bfvg_gap_high, bar_index + fvg_lookback,
+                    bfvg_gap_low, border_color=color.red,
+                    bgcolor=COL_BEAR_FVG, border_width=1)
+
+// ─────────────────────────────────────────────────────────────
+// ORDER BLOCKS
+// ─────────────────────────────────────────────────────────────
+
+var color COL_BULL_OB = color.new(color.teal,   75)
+var color COL_BEAR_OB = color.new(color.maroon, 75)
+
+if ob_show and bar_index > 4
+    body_size = math.abs(close[2] - open[2]) / pip
+
+    // Bullish OB: bearish candle [2] followed by up move breaking above its high
+    if close[2] < open[2] and body_size >= ob_min_body
+        if high[1] > high[2] or high[0] > high[2]
+            ob_top = math.max(open[2], close[2])
+            ob_bot = math.min(open[2], close[2])
+            box.new(bar_index - 2, ob_top, bar_index + ob_lookback,
+                    ob_bot, border_color=color.teal,
+                    bgcolor=COL_BULL_OB, border_width=1)
+            label.new(bar_index - 2, ob_top, "Bull OB",
+                      color=color.new(color.teal,60), textcolor=color.white,
+                      size=size.tiny, style=label.style_label_right)
+
+    // Bearish OB: bullish candle [2] followed by down move breaking below its low
+    if close[2] > open[2] and body_size >= ob_min_body
+        if low[1] < low[2] or low[0] < low[2]
+            ob_top2 = math.max(open[2], close[2])
+            ob_bot2 = math.min(open[2], close[2])
+            box.new(bar_index - 2, ob_top2, bar_index + ob_lookback,
+                    ob_bot2, border_color=color.maroon,
+                    bgcolor=COL_BEAR_OB, border_width=1)
+            label.new(bar_index - 2, ob_bot2, "Bear OB",
+                      color=color.new(color.maroon,60), textcolor=color.white,
+                      size=size.tiny, style=label.style_label_right)
+
+// ─────────────────────────────────────────────────────────────
+// SWING HIGHS / LOWS  (Liquidity pools)
+// ─────────────────────────────────────────────────────────────
+
+n = swing_strength
+
+isSwingHigh = high[n] == ta.highest(high, 2 * n + 1)
+isSwingLow  = low[n]  == ta.lowest (low,  2 * n + 1)
+
+// Draw horizontal lines from swing points — these are your liquidity levels
+if liq_show and isSwingHigh
+    line.new(bar_index - n, high[n], bar_index + liq_lookback, high[n],
+             color=color.new(color.red, 50), style=line.style_dashed, width=1)
+    label.new(bar_index - n, high[n], "BSL",
+              color=color.new(color.red, 70), textcolor=color.white,
+              size=size.tiny, style=label.style_label_left)
+
+if liq_show and isSwingLow
+    line.new(bar_index - n, low[n], bar_index + liq_lookback, low[n],
+             color=color.new(color.green, 50), style=line.style_dashed, width=1)
+    label.new(bar_index - n, low[n], "SSL",
+              color=color.new(color.green, 70), textcolor=color.white,
+              size=size.tiny, style=label.style_label_left)
+
+// ─────────────────────────────────────────────────────────────
+// EQUAL HIGHS / EQUAL LOWS  (Liquidity pools — double lines)
+// ─────────────────────────────────────────────────────────────
+
+if liq_show and isSwingHigh
+    // Look back for another swing high at similar level
+    for i = n + 2 to math.min(bar_index - 1, liq_lookback)
+        prev_sh = high[i]
+        is_prev_sh = high[i] == ta.highest(high[i - n > 0 ? i - n : 0], math.min(2 * n + 1, i + 1))
+        if is_prev_sh and math.abs(high[n] - prev_sh) <= liq_equal_pips * pip
+            label.new(bar_index - n, high[n] + 2 * pip, "EQH 🎯",
+                      color=color.new(color.red, 40), textcolor=color.white,
+                      size=size.small, style=label.style_label_down)
+            break
+
+if liq_show and isSwingLow
+    for i = n + 2 to math.min(bar_index - 1, liq_lookback)
+        prev_sl = low[i]
+        is_prev_sl = low[i] == ta.lowest(low[i - n > 0 ? i - n : 0], math.min(2 * n + 1, i + 1))
+        if is_prev_sl and math.abs(low[n] - prev_sl) <= liq_equal_pips * pip
+            label.new(bar_index - n, low[n] - 2 * pip, "EQL 🎯",
+                      color=color.new(color.green, 40), textcolor=color.white,
+                      size=size.small, style=label.style_label_up)
+            break
+
+// ─────────────────────────────────────────────────────────────
+// LEGEND (table in top-right corner)
+// ─────────────────────────────────────────────────────────────
+
+var table legend = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 80), border_width=1)
+if barstate.islast
+    table.cell(legend, 0, 0, "ICT Visualizer",  text_color=color.white, text_size=size.small)
+    table.cell(legend, 1, 0, "",                bgcolor=color.new(color.black,80))
+    table.cell(legend, 0, 1, "■ Bull OB",       text_color=color.teal,    text_size=size.tiny)
+    table.cell(legend, 1, 1, "■ Bear OB",       text_color=color.maroon,  text_size=size.tiny)
+    table.cell(legend, 0, 2, "■ Bull FVG",      text_color=color.green,   text_size=size.tiny)
+    table.cell(legend, 1, 2, "■ Bear FVG",      text_color=color.red,     text_size=size.tiny)
+    table.cell(legend, 0, 3, "── BSL",          text_color=color.red,     text_size=size.tiny)
+    table.cell(legend, 1, 3, "── SSL",          text_color=color.green,   text_size=size.tiny)
+    table.cell(legend, 0, 4, "EQH 🎯",          text_color=color.red,     text_size=size.tiny)
+    table.cell(legend, 1, 4, "EQL 🎯",          text_color=color.green,   text_size=size.tiny)
+    table.cell(legend, 0, 5, "■ London KZ",     text_color=color.blue,    text_size=size.tiny)
+    table.cell(legend, 1, 5, "■ NY KZ",         text_color=color.orange,  text_size=size.tiny)
+    table.cell(legend, 0, 6, "Use with MT5 EA", text_color=color.gray,    text_size=size.tiny)
+    table.cell(legend, 1, 6, "for live trades", text_color=color.gray,    text_size=size.tiny)
