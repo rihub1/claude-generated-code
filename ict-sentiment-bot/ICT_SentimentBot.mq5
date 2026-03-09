@@ -55,6 +55,14 @@ input string   SentimentFile      = "myfxbook_sentiment.csv"; // CSV filename (i
 input double   SentimentThreshold = 60.0;     // Retail % threshold to trigger contrarian bias
 input int      SentimentMaxAge    = 60;        // Max acceptable data age (minutes)
 
+//--- Quality Control (new)
+input group "=== Quality Control ==="
+input int      MinQualityScore    = 70;        // Minimum score to take a trade (0-100)
+input int      MaxTradesPerWeek   = 6;         // Hard cap: max trades across all pairs per week
+input double   StrongSentiment    = 70.0;      // Sentiment % considered "strong" (vs basic 60%)
+input ENUM_TIMEFRAMES HTF_Confirm = PERIOD_H4; // Higher timeframe for trend confirmation
+input bool     RequireHTFConfirm  = true;      // Require H4 trend to agree with bias
+
 //--- Trade Execution
 input group "=== Trade Execution ==="
 input int      MagicNumber        = 20250309;  // EA magic number
@@ -116,7 +124,9 @@ int          g_liqCount   = 0;
 
 double       g_pip;
 double       g_point;
-datetime     g_lastBarTime = 0;
+datetime     g_lastBarTime  = 0;
+int          g_weeklyTrades = 0;       // trades taken this calendar week
+datetime     g_weekStart    = 0;       // Monday 00:00 of current week
 
 //+------------------------------------------------------------------+
 //| Initialization                                                     |
@@ -161,8 +171,13 @@ void OnTick()
    // ── 1. KILL ZONE CHECK ────────────────────────────────────────────
    if(!IsInKillZone()) return;
 
-   // ── 2. POSITION CAP CHECK ─────────────────────────────────────────
+   // ── 2. POSITION CAP + WEEKLY TRADE CAP ───────────────────────────
+   ResetWeeklyCounterIfNeeded();
    if(CountMyPositions() >= MaxOpenPositions) return;
+   if(g_weeklyTrades >= MaxTradesPerWeek) {
+      // Silent — don't spam the log every bar
+      return;
+   }
 
    // ── 3. REFRESH SENTIMENT ──────────────────────────────────────────
    if((int)(TimeCurrent() - g_sentLoaded) > SentimentMaxAge * 60)
@@ -184,7 +199,12 @@ void OnTick()
    ScanOrderBlocks(bias);
    ScanFairValueGaps(bias);
 
-   // ── 8. CHECK ENTRY CONDITIONS ─────────────────────────────────────
+   // ── 8. QUALITY SCORE GATE ─────────────────────────────────────────
+   int score = CalcQualityScore(bias, sweepOK);
+   Print("Quality score: ", score, "/100  (min required: ", MinQualityScore, ")");
+   if(score < MinQualityScore) return;
+
+   // ── 9. CHECK ENTRY CONDITIONS ─────────────────────────────────────
    CheckForEntry(bias);
 }
 
@@ -606,14 +626,18 @@ bool OpenBuy(double price, double sl, double tp)
 {
    double lot = CalcLotSize(price, sl);
    if(lot <= 0) return false;
-   return trade.Buy(lot, _Symbol, price, sl, tp, TradeComment);
+   bool ok = trade.Buy(lot, _Symbol, price, sl, tp, TradeComment);
+   if(ok) g_weeklyTrades++;
+   return ok;
 }
 
 bool OpenSell(double price, double sl, double tp)
 {
    double lot = CalcLotSize(price, sl);
    if(lot <= 0) return false;
-   return trade.Sell(lot, _Symbol, price, sl, tp, TradeComment);
+   bool ok = trade.Sell(lot, _Symbol, price, sl, tp, TradeComment);
+   if(ok) g_weeklyTrades++;
+   return ok;
 }
 
 //+------------------------------------------------------------------+
@@ -668,6 +692,102 @@ void ManageTrailingStop()
          }
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| Reset weekly trade counter on new calendar week                    |
+//+------------------------------------------------------------------+
+void ResetWeeklyCounterIfNeeded()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+
+   // Calculate this week's Monday 00:00
+   // MQL5: dayofweek 0=Sunday, 1=Monday ... 6=Saturday
+   int daysSinceMonday = (dt.day_of_week == 0) ? 6 : dt.day_of_week - 1;
+   datetime thisMonday = TimeCurrent() - daysSinceMonday * 86400;
+   thisMonday = thisMonday - (thisMonday % 86400); // floor to midnight
+
+   if(thisMonday != g_weekStart) {
+      if(g_weekStart != 0)
+         Print("New week — resetting trade counter. Last week: ", g_weeklyTrades, " trades.");
+      g_weekStart    = thisMonday;
+      g_weeklyTrades = 0;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Quality score: 0-100 — only trade if score >= MinQualityScore     |
+//|                                                                    |
+//| Scoring breakdown:                                                 |
+//|   25 pts — Liquidity sweep confirmed (required gate already met)   |
+//|   20 pts — Strong sentiment extreme (>StrongSentiment %)          |
+//|   15 pts — Currently inside a kill zone                            |
+//|   20 pts — Price AT an Order Block (vs FVG — OB is stronger)      |
+//|   20 pts — H4 (HTF) trend agrees with bias                        |
+//|                                                                    |
+//| A score of 70+ means at least 3-4 conditions align, not just 1-2 |
+//+------------------------------------------------------------------+
+int CalcQualityScore(int bias, bool sweepConfirmed)
+{
+   int score = 0;
+
+   // ── 25 pts: Liquidity sweep (already confirmed before we get here) ──
+   if(sweepConfirmed) score += 25;
+
+   // ── 20 pts: Strong sentiment extreme ─────────────────────────────────
+   // Reload the sentiment value for this symbol and check if it's STRONG
+   for(int i = 0; i < g_sentCount; i++) {
+      string s = g_sent[i].symbol;
+      if(StringFind(_Symbol, s) >= 0 || StringFind(s, _Symbol) >= 0) {
+         double lPct = g_sent[i].longPct;
+         double sPct = g_sent[i].shortPct;
+         if(bias == -1 && lPct >= StrongSentiment) score += 20;
+         if(bias ==  1 && sPct >= StrongSentiment) score += 20;
+         break;
+      }
+   }
+
+   // ── 15 pts: Inside a kill zone ───────────────────────────────────────
+   if(IsInKillZone()) score += 15;
+
+   // ── 20 pts: Price at Order Block (OB is higher quality than FVG) ─────
+   // Check if any active OB in the bias direction contains current price
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   for(int i = 0; i < g_obsCount; i++) {
+      if(!g_obs[i].active) continue;
+      if(bias ==  1 && g_obs[i].bullish &&
+         bid >= g_obs[i].low - 3*g_pip && bid <= g_obs[i].high + 2*g_pip) {
+         score += 20; break;
+      }
+      if(bias == -1 && !g_obs[i].bullish &&
+         ask >= g_obs[i].low - 2*g_pip && ask <= g_obs[i].high + 3*g_pip) {
+         score += 20; break;
+      }
+   }
+
+   // ── 20 pts: H4 trend agrees with bias ────────────────────────────────
+   if(RequireHTFConfirm) {
+      // Simple HTF trend: is the H4 20-bar EMA sloping in our direction?
+      // We use iMA on the HTF timeframe directly
+      double ema_now  = iMA(_Symbol, HTF_Confirm, 20, 0, MODE_EMA, PRICE_CLOSE);
+      double ema_prev = iMA(_Symbol, HTF_Confirm, 20, 1, MODE_EMA, PRICE_CLOSE);  // 1 bar ago
+
+      if(ema_now == 0 || ema_prev == 0) {
+         score += 10; // Can't confirm — give partial credit
+      } else {
+         bool htfBullish = ema_now > ema_prev;
+         bool htfBearish = ema_now < ema_prev;
+         if(bias ==  1 && htfBullish) score += 20;
+         if(bias == -1 && htfBearish) score += 20;
+         // HTF disagrees: give 0 pts (this will likely push score below threshold)
+      }
+   } else {
+      score += 20; // HTF confirmation disabled — give full points
+   }
+
+   return score;
 }
 
 //+------------------------------------------------------------------+

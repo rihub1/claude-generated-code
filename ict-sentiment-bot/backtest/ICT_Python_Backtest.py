@@ -52,8 +52,10 @@ CONFIG = {
     "start_date": "2020-01-01",
     "end_date":   "2024-12-31",
 
-    # Chart timeframe: "M15", "H1", "H4"
-    "timeframe": "M15",
+    # Chart timeframe: "H1" for intraday (H4 for swing confirmation)
+    # H1 is the recommended intraday timeframe — enough bars for ICT structures
+    # without the noise of M15, and realistic for 2-6 trades/week
+    "timeframe": "H1",
 
     # Kill zones (UTC hours)
     "london_start": 7,
@@ -64,6 +66,8 @@ CONFIG = {
     # Sentiment (COT-based)
     "sent_long_threshold":  60,   # Speculator net long %  → SHORT bias
     "sent_short_threshold": 40,   # Speculator net long %  → LONG  bias
+    "strong_sent_long":     70,   # "Strong" long extreme  → +20 quality pts
+    "strong_sent_short":    30,   # "Strong" short extreme → +20 quality pts
 
     # ICT parameters
     "pivot_len":    5,     # Swing high/low confirmation bars each side
@@ -72,6 +76,14 @@ CONFIG = {
     "ob_min_body":  5.0,   # Min OB body (pips)
     "fvg_lookback": 30,    # FVG scan depth (bars)
     "fvg_min_pips": 3.0,   # Min FVG size (pips)
+
+    # Quality control
+    "min_quality_score": 70,  # 0-100 — only take trades scoring >= this
+    "max_trades_per_week": 6, # Hard cap — no more than 6 trades per week
+
+    # HTF confirmation
+    "htf_timeframe": "H4",   # H4 EMA used for trend confirmation (+20 pts)
+    "htf_ema_period": 20,
 
     # Risk management
     "risk_pct":       1.0,   # % of balance risked per trade
@@ -546,6 +558,14 @@ def run_backtest(pair: str, ohlcv: pd.DataFrame,
     # Daily close prices for RSI proxy (ANTI-LOOKAHEAD: shift(1) applied in get_sentiment_bias)
     daily_close = ohlcv["close"].resample("D").last().dropna()
 
+    # H4 data for HTF confirmation — fetched once, resampled from OHLCV
+    h4_close  = ohlcv["close"].resample("4H").last().dropna()
+    h4_ema    = h4_close.ewm(span=CONFIG["htf_ema_period"], adjust=False).mean()
+
+    # Weekly trade counter — resets each Monday
+    week_trades  = 0
+    current_week = None
+
     print(f"\n  Running {pair} backtest: {len(ohlcv):,} bars")
     print(f"  Date range: {ohlcv.index[0].date()} → {ohlcv.index[-1].date()}")
 
@@ -571,8 +591,13 @@ def run_backtest(pair: str, ohlcv: pd.DataFrame,
                 trades.append(trade)
                 open_pos.remove(trade)
 
-        # ── 2. Max positions cap ───────────────────────────────────────────
-        if len(open_pos) >= 3:
+        # ── 2. Max positions + weekly cap ─────────────────────────────────
+        # Reset weekly counter on Monday
+        this_week = current_time.isocalendar()[:2]  # (year, week_number)
+        if this_week != current_week:
+            current_week = this_week
+            week_trades  = 0
+        if len(open_pos) >= 3 or week_trades >= CONFIG["max_trades_per_week"]:
             continue
 
         # ── 3. Kill zone filter ────────────────────────────────────────────
@@ -600,7 +625,36 @@ def run_backtest(pair: str, ohlcv: pd.DataFrame,
         if ob_top is None and fvg_top is None:
             continue
 
-        # ── 8. Execute trade at CURRENT bar's open ─────────────────────────
+        # ── 8. QUALITY SCORE GATE ──────────────────────────────────────────
+        # Compute HTF (H4) trend direction — strictly past data only
+        past_h4_ema = h4_ema[h4_ema.index < current_time]
+        htf_bullish = (len(past_h4_ema) >= 2 and
+                       past_h4_ema.iloc[-1] > past_h4_ema.iloc[-2])
+        htf_bearish = (len(past_h4_ema) >= 2 and
+                       past_h4_ema.iloc[-1] < past_h4_ema.iloc[-2])
+
+        quality = 0
+        quality += 25  # sweep confirmed (already passed the gate above)
+
+        # Strong sentiment bonus
+        past_cot_now = cot[cot.index < current_time]
+        if not past_cot_now.empty:
+            lp = past_cot_now["sentiment_long_pct"].iloc[-1]
+            if bias ==  1 and lp <= CONFIG["strong_sent_short"]: quality += 20
+            if bias == -1 and lp >= CONFIG["strong_sent_long"]:  quality += 20
+
+        quality += 15  # inside kill zone (already passed that gate)
+
+        if ob_top is not None:   quality += 20   # OB > FVG
+        elif fvg_top is not None: quality += 10  # FVG = partial
+
+        if bias ==  1 and htf_bullish: quality += 20
+        if bias == -1 and htf_bearish: quality += 20
+
+        if quality < CONFIG["min_quality_score"]:
+            continue   # Not enough confluence — skip this trade
+
+        # ── 9. Execute trade at CURRENT bar's open ─────────────────────────
         # This is the anti-lookahead entry: signal from past bars, fill at current open
         entry_price = current_bar["open"]
         zone_top    = ob_top  if ob_top  is not None else fvg_top
@@ -635,6 +689,7 @@ def run_backtest(pair: str, ohlcv: pd.DataFrame,
             reason      = reason,
         )
         open_pos.append(new_trade)
+        week_trades += 1
 
     # Close any positions still open at end of backtest
     if ohlcv.index[-1] is not None and len(ohlcv) > 0:

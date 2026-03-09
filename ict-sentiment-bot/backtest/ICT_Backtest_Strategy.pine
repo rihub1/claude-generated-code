@@ -67,6 +67,16 @@ input group "=== Fair Value Gaps ==="
 int   fvg_lookback   = input.int(30,   "FVG lookback (bars)",   minval=5, maxval=100)
 float fvg_min_size   = input.float(3.0,"Min FVG size (pips)",   minval=0.5)
 
+// Quality Control
+input group "=== Quality Control ==="
+int   min_quality    = input.int(70,     "Min quality score to trade (0-100)",    minval=50, maxval=100,
+                         tooltip="Score = sum of: Sweep(25) + Strong Sentiment(20) + Kill Zone(15) + OB entry(20) + HTF trend(20).\n70+ = at least 3-4 factors aligned.")
+int   max_wk_trades  = input.int(6,      "Max trades per calendar week",          minval=1,  maxval=20)
+float strong_sent    = input.float(70.0, "Strong sentiment threshold (%)",        minval=51, maxval=95,
+                         tooltip="Above this = +20 quality points. Basic threshold (65%) gives 0 bonus points.")
+string htf_tf        = input.string("240","HTF trend timeframe (mins)",           options=["60","240","1D"],
+                         tooltip="H1=60, H4=240. HTF EMA must slope in bias direction for +20 points.")
+
 // Risk / Trade
 input group "=== Risk & Trade ==="
 float fixed_sl_pips  = input.float(20.0,"Fallback SL (pips) when no OB/FVG zone",minval=5)
@@ -241,17 +251,86 @@ if bar_index > fvg_lookback + 5
                     bearFVG_bot  := nextHigh
 
 // ─────────────────────────────────────────────────────────────────────
+// HTF TREND CONFIRMATION (H4 by default)
+// Uses request.security with lookahead_off and [1] — confirmed past HTF bar.
+// ─────────────────────────────────────────────────────────────────────
+float htf_ema_now  = request.security(syminfo.tickerid, htf_tf,
+                         ta.ema(close, 20)[0], lookahead=barmerge.lookahead_off)
+float htf_ema_prev = request.security(syminfo.tickerid, htf_tf,
+                         ta.ema(close, 20)[1], lookahead=barmerge.lookahead_off)
+bool htf_bullish   = htf_ema_now > htf_ema_prev
+bool htf_bearish   = htf_ema_now < htf_ema_prev
+
+// ─────────────────────────────────────────────────────────────────────
+// QUALITY SCORE (0-100)
+// Only trades with score >= min_quality are taken.
+// Scoring:
+//   25 — Liquidity sweep confirmed
+//   20 — Sentiment extreme is STRONG (above strong_sent threshold)
+//   15 — Currently in a kill zone
+//   20 — Price at Order Block (OB > FVG in quality)
+//   20 — HTF trend agrees with bias
+// ─────────────────────────────────────────────────────────────────────
+int score_long  = 0
+int score_short = 0
+
+// +25: sweep
+if ssl_swept  then score_long  := score_long  + 25
+if bsl_swept  then score_short := score_short + 25
+
+// +20: strong sentiment (using the same d1_rsi proxy)
+if d1_rsi <= (100 - strong_sent) then score_long  := score_long  + 20
+if d1_rsi >=          strong_sent then score_short := score_short + 20
+
+// +15: kill zone
+if inKZ then
+    score_long  := score_long  + 15
+    score_short := score_short + 15
+
+// +20: at Order Block (bonus vs FVG-only)
+if bullOBFound  then score_long  := score_long  + 20
+else if bullFVGFound then score_long := score_long + 10  // FVG = half points
+if bearOBFound  then score_short := score_short + 20
+else if bearFVGFound then score_short := score_short + 10
+
+// +20: HTF trend agrees
+if htf_bullish  then score_long  := score_long  + 20
+if htf_bearish  then score_short := score_short + 20
+
+bool qualityL = score_long  >= min_quality
+bool qualityS = score_short >= min_quality
+
+// ─────────────────────────────────────────────────────────────────────
+// WEEKLY TRADE CAP
+// Count strategy entries this week using a rolling sum.
+// dayofweek(time) = 1 (Monday) through 5 (Friday) in Pine.
+// We track a simple counter that resets each Monday.
+// ─────────────────────────────────────────────────────────────────────
+bool   is_monday     = dayofweek(time) == 2   // Pine: 1=Sun,2=Mon,...7=Sat
+var int week_trades  = 0
+var int prev_total   = 0
+
+if is_monday and dayofweek(time[1]) != 2
+    week_trades := 0   // Reset on Monday
+
+int new_fills = strategy.closedtrades - prev_total + strategy.opentrades
+week_trades   := week_trades + math.max(0, strategy.closedtrades - prev_total)
+prev_total    := strategy.closedtrades
+
+bool under_week_cap = (strategy.opentrades + week_trades) < max_wk_trades
+
+// ─────────────────────────────────────────────────────────────────────
 // ENTRY CONDITIONS
 // ─────────────────────────────────────────────────────────────────────
 // All inputs are confirmed, closed-bar data.
 // strategy.entry() with process_orders_on_close=false fills NEXT bar open.
 // ─────────────────────────────────────────────────────────────────────
-bool hasEntry     = strategy.opentrades < max_trades
+bool hasEntry     = strategy.opentrades < max_trades and under_week_cap
 bool entryStructL = bullOBFound or bullFVGFound   // at least one ICT zone
 bool entryStructS = bearOBFound or bearFVGFound
 
-bool longCond  = inKZ and sentBias ==  1 and ssl_swept and entryStructL and hasEntry
-bool shortCond = inKZ and sentBias == -1 and bsl_swept and entryStructS and hasEntry
+bool longCond  = inKZ and sentBias ==  1 and ssl_swept and entryStructL and hasEntry and qualityL
+bool shortCond = inKZ and sentBias == -1 and bsl_swept and entryStructS and hasEntry and qualityS
 
 // ── SL / TP calculation ───────────────────────────────────────────────
 // SL is placed below the OB/FVG zone bottom (+ 5 pip buffer).
@@ -318,7 +397,7 @@ plot(ssl_level, "SSL", color.new(color.green, 60), 1, plot.style_circles)
 // ─────────────────────────────────────────────────────────────────────
 // INFO TABLE (top-right corner)
 // ─────────────────────────────────────────────────────────────────────
-var table info = table.new(position.top_right, 2, 6,
+var table info = table.new(position.top_right, 2, 7,
      bgcolor=color.new(color.black, 75), border_width=1, frame_width=1)
 
 if barstate.islast
@@ -335,9 +414,14 @@ if barstate.islast
     table.cell(info, 0, 3, "D1 RSI",              text_color=color.gray,   text_size=size.tiny)
     table.cell(info, 1, 3, str.tostring(math.round(d1_rsi, 1)),
                text_color=color.white,             text_size=size.tiny)
-    table.cell(info, 0, 4, "Bull OB/FVG",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 4, (bullOBFound ? "OB " : "") + (bullFVGFound ? "FVG" : ""),
-               text_color=color.lime,              text_size=size.tiny)
-    table.cell(info, 0, 5, "Bear OB/FVG",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 5, (bearOBFound ? "OB " : "") + (bearFVGFound ? "FVG" : ""),
-               text_color=color.red,               text_size=size.tiny)
+    table.cell(info, 0, 4, "Quality L/S",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 4, str.tostring(score_long) + " / " + str.tostring(score_short),
+               text_color=color.yellow,            text_size=size.tiny)
+    table.cell(info, 0, 5, "Week trades",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 5, str.tostring(week_trades) + " / " + str.tostring(max_wk_trades),
+               text_color=week_trades >= max_wk_trades ? color.red : color.lime,
+               text_size=size.tiny)
+    table.cell(info, 0, 6, "HTF trend",           text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 6, htf_bullish ? "▲ bull" : htf_bearish ? "▼ bear" : "flat",
+               text_color=htf_bullish ? color.lime : htf_bearish ? color.red : color.gray,
+               text_size=size.tiny)
