@@ -53,8 +53,6 @@ int   h1_fvg_lookback= input.int (20,   "H1 FVG lookback (bars)", minval=5, maxv
 float h1_fvg_min     = input.float(3.0, "H1 FVG min size (pips)", minval=0.5,           group="H1 Structure  (OB + FVG)")
 
 // M15 Entry Triggers
-bool  debug_mode     = input.bool (false, "DEBUG MODE — trade every kill zone bar (ignore all filters)", group="M15 Entry Triggers",
-                        tooltip="ON = enters long+short on every kill zone bar. Use ONLY to verify the strategy engine runs.\nTurn OFF for real backtesting.")
 bool  require_bos    = input.bool (false, "Require BOS/CHoCH before entry (strict ICT flow)",  group="M15 Entry Triggers",
                         tooltip="ON = full sequential ICT flow: BOS in kill zone → retrace to zone → entry.\nOFF = simpler: bias + kill zone + in zone = entry. Use OFF first to validate zones.")
 bool  require_zone   = input.bool (false, "Require OB/FVG zone confirmation",                   group="M15 Entry Triggers",
@@ -506,8 +504,8 @@ bool canTrade = strategy.opentrades < max_pos and under_cap
 bool zone_ok_l = (not require_zone) or structL
 bool zone_ok_s = (not require_zone) or structS
 
-bool longCond  = canTrade and (debug_mode ? (inKZ and strategy.opentrades == 0) : (require_bos ? (pending_long  and zone_ok_l) : (bias_long  and inKZ and zone_ok_l)))
-bool shortCond = canTrade and (debug_mode ? false                               : (require_bos ? (pending_short and zone_ok_s) : (bias_short and inKZ and zone_ok_s)))
+bool longCond  = canTrade and (require_bos ? (pending_long  and zone_ok_l) : (bias_long  and inKZ and zone_ok_l))
+bool shortCond = canTrade and (require_bos ? (pending_short and zone_ok_s) : (bias_short and inKZ and zone_ok_s))
 
 if longCond
     pending_long  := false
