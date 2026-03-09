@@ -1,26 +1,26 @@
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║         ICT Sentinel — Backtest Strategy  (Pine Script v6)       ║
-// ║  Lookahead-free: signals on bar CLOSE, fills at next bar OPEN    ║
+// ║    ICT Sentinel — Backtest v3.0  (Pine Script v6)               ║
+// ║    Multi-Timeframe: D1/H4 bias  →  H1 structure  →  M15 entry  ║
+// ║    Run this script on the M15 chart                              ║
 // ╠══════════════════════════════════════════════════════════════════╣
-// ║  ANTI-LOOKAHEAD GUARANTEES                                        ║
-// ║  1. process_orders_on_close=false → entry fills at NEXT open     ║
-// ║  2. calc_on_every_tick=false      → only runs on confirmed bars   ║
-// ║  3. Sentiment: D1 RSI[1] via request.security(lookahead_off)     ║
-// ║  4. ta.pivothigh/pivotlow confirmed pivot_len bars in the past    ║
-// ║  5. OB/FVG loops start at i=2 — all bars are confirmed history   ║
-// ║  6. Liquidity sweep uses high[1]/low[1]/close[1] — prev bar only  ║
+// ║  ANTI-LOOKAHEAD GUARANTEES                                       ║
+// ║  1. process_orders_on_close=false → fills at NEXT bar open      ║
+// ║  2. calc_on_every_tick=false      → confirmed (closed) bars only ║
+// ║  3. All HTF data uses [1] + lookahead_off → previous HTF bar    ║
+// ║  4. OB/FVG loops scan backwards from i=2 — all past history     ║
+// ║  5. Sweep window: last 5 M15 bars (≈75 mins) — all confirmed    ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
 //@version=6
 strategy(
-     title                   = "ICT Sentinel — Backtest v2.0",
+     title                   = "ICT Sentinel — Backtest v3.0 (MTF)",
      overlay                 = true,
      process_orders_on_close = false,
      calc_on_every_tick      = false,
-     initial_capital         = 10000,
-     currency                = currency.USD,
+     initial_capital         = 50,
+     currency                = currency.GBP,
      default_qty_type        = strategy.percent_of_equity,
-     default_qty_value       = 1.0,
+     default_qty_value       = 2.0,
      commission_type         = strategy.commission.percent,
      commission_value        = 0.02,
      slippage                = 2,
@@ -28,54 +28,49 @@ strategy(
      )
 
 // ─────────────────────────────────────────────────────────────────────
-// INPUTS  (group= replaces the old standalone "input group" syntax)
+// INPUTS
 // ─────────────────────────────────────────────────────────────────────
 
-bool   use_london    = input.bool  (true,   "London Kill Zone",                          group="Kill Zones (UTC)")
-int    london_start  = input.int   (7,      "London start hour (UTC)",  minval=0, maxval=23, group="Kill Zones (UTC)")
-int    london_end    = input.int   (10,     "London end   hour (UTC)",  minval=0, maxval=23, group="Kill Zones (UTC)")
-bool   use_ny        = input.bool  (true,   "New York Kill Zone",                        group="Kill Zones (UTC)")
-int    ny_start      = input.int   (13,     "NY start hour (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
-int    ny_end        = input.int   (16,     "NY end   hour (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
+// Kill Zones
+bool  use_london    = input.bool (true,  "London Kill Zone",              group="Kill Zones (UTC)")
+int   london_start  = input.int  (7,     "London start (UTC)",  minval=0, maxval=23, group="Kill Zones (UTC)")
+int   london_end    = input.int  (10,    "London end   (UTC)",  minval=0, maxval=23, group="Kill Zones (UTC)")
+bool  use_ny        = input.bool (true,  "New York Kill Zone",            group="Kill Zones (UTC)")
+int   ny_start      = input.int  (13,    "NY start (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
+int   ny_end        = input.int  (16,    "NY end   (UTC)",      minval=0, maxval=23, group="Kill Zones (UTC)")
 
-string sent_source   = input.string("D1 RSI", "Proxy source",           options=["D1 RSI","W1 RSI"],
-                         tooltip="D1 RSI mimics daily retail sentiment. RSI > threshold = retail majority long = SHORT bias.",
-                         group="Sentiment Proxy")
-float  sent_long_lv  = input.float (60.0,   "Retail majority LONG  (RSI ≥ X → SHORT bias)", minval=51, maxval=90, group="Sentiment Proxy")
-float  sent_short_lv = input.float (40.0,   "Retail majority SHORT (RSI ≤ X → LONG  bias)", minval=10, maxval=49, group="Sentiment Proxy")
+// HTF Bias (D1 + H4) — Direction
+float d1_sent_long  = input.float(60.0,  "D1 RSI ≥ X  →  SHORT bias (retail majority long)",  minval=51, maxval=90, group="HTF Bias  (D1 + H4)")
+float d1_sent_short = input.float(40.0,  "D1 RSI ≤ X  →  LONG  bias (retail majority short)", minval=10, maxval=49, group="HTF Bias  (D1 + H4)")
+int   h4_ema_len    = input.int  (20,    "H4 trend EMA length",           minval=5,            group="HTF Bias  (D1 + H4)")
+bool  require_h4    = input.bool (true,  "Require H4 trend to agree",                          group="HTF Bias  (D1 + H4)",
+                        tooltip="H4 EMA must slope in the same direction as D1 bias.\nIf unchecked, D1 bias alone is enough.")
 
-int    pivot_len     = input.int   (5,      "Pivot strength (bars each side)", minval=2, maxval=20, group="Liquidity Sweeps")
-float  equal_pips    = input.float (3.0,    "Equal level tolerance (pips)",    minval=0.5,          group="Liquidity Sweeps")
+// H1 Structure (Order Blocks & FVGs identified on H1)
+int   h1_ob_lookback = input.int (20,   "H1 OB lookback (bars)",  minval=5, maxval=50,  group="H1 Structure  (OB + FVG)")
+float h1_ob_min_body = input.float(5.0, "H1 OB min body (pips)",  minval=1.0,           group="H1 Structure  (OB + FVG)")
+int   h1_fvg_lookback= input.int (20,   "H1 FVG lookback (bars)", minval=5, maxval=50,  group="H1 Structure  (OB + FVG)")
+float h1_fvg_min     = input.float(3.0, "H1 FVG min size (pips)", minval=0.5,           group="H1 Structure  (OB + FVG)")
 
-int    ob_lookback   = input.int   (30,     "OB lookback (bars)",  minval=5, maxval=100, group="Order Blocks")
-float  ob_min_body   = input.float (5.0,    "Min OB body (pips)",  minval=1.0,           group="Order Blocks")
+// M15 Entry Triggers
+int   m15_pivot_len  = input.int (3,    "M15 swing strength (bars each side)", minval=2, maxval=10, group="M15 Entry Triggers")
+int   sweep_window   = input.int (5,    "Sweep lookback window (M15 bars)",    minval=1, maxval=10, group="M15 Entry Triggers",
+                        tooltip="How many past M15 bars to check for a liquidity sweep.\n5 bars = look back 75 minutes for a sweep.")
 
-int    fvg_lookback  = input.int   (30,     "FVG lookback (bars)", minval=5, maxval=100, group="Fair Value Gaps")
-float  fvg_min_size  = input.float (3.0,    "Min FVG size (pips)", minval=0.5,           group="Fair Value Gaps")
-
-int    min_quality   = input.int   (60,     "Min quality score (0-100)",     minval=50, maxval=100,
-                         tooltip="Sweep(25)+StrongSent(20)+KillZone(15)+OB(20)+HTF(20). Score ≥70 needed to trade.",
-                         group="Quality Control")
-int    max_wk_trades = input.int   (6,      "Max trades per week",           minval=1,  maxval=20, group="Quality Control")
-float  strong_sent   = input.float (70.0,   "Strong sentiment threshold (%)", minval=51, maxval=95,
-                         tooltip="RSI at or beyond this = +20 quality points.",
-                         group="Quality Control")
-string htf_tf        = input.string("240",  "HTF trend timeframe",           options=["60","240","1D"],
-                         tooltip="H1=60, H4=240. HTF EMA slope must agree with bias for +20 pts.",
-                         group="Quality Control")
-
-float  fixed_sl_pips   = input.float (20.0,  "Fallback SL pips (no OB/FVG)",        minval=5,   group="Risk and Trade")
-float  min_rr          = input.float (2.0,   "Full TP target (R:R)",                 minval=1.0, group="Risk and Trade")
-bool   use_partial_tp  = input.bool  (true,  "Take 50% profit at 1:1 R:R",                       group="Risk and Trade",
-                           tooltip="Closes half the position when trade is up 1× the risk. Locks in profit, lets rest run.")
-bool   use_breakeven   = input.bool  (true,  "Move SL to breakeven after partial TP",             group="Risk and Trade",
-                           tooltip="Once 50% is closed at 1:1, stop loss moves to entry price. Worst case = scratch trade.")
-bool   use_session_exit = input.bool (true,  "Close trade at end of kill zone",                   group="Risk and Trade",
-                           tooltip="If trade is still open when the kill zone ends, close it. Avoids overnight drift.")
-int    max_trades      = input.int   (3,     "Max open positions at once",           minval=1,   group="Risk and Trade")
+// Risk & Exit
+float risk_pct       = input.float(2.0,  "Risk per trade (%)",                minval=0.5, maxval=10, group="Risk and Exit",
+                        tooltip="2% of £50 = £1 per trade at start.")
+float fixed_sl_pips  = input.float(15.0, "Fallback SL (pips, no OB/FVG)",    minval=5,              group="Risk and Exit")
+bool  use_be         = input.bool (true,  "Move SL to breakeven at 1:1",                            group="Risk and Exit")
+bool  use_partial    = input.bool (true,  "Close 50% at 2:1 R:R",                                   group="Risk and Exit")
+float full_rr        = input.float(3.0,  "Final TP (R:R on remaining 50%)",  minval=2.0,            group="Risk and Exit")
+bool  session_exit   = input.bool (true,  "Close at end of kill zone",                              group="Risk and Exit",
+                        tooltip="Forces close of any open trade when the kill zone session ends.\nPrevents ICT intraday trades becoming accidental overnight holds.")
+int   max_pos        = input.int  (2,    "Max open positions",                minval=1,              group="Risk and Exit")
+int   max_wk_trades  = input.int  (6,    "Max trades per week",               minval=1, maxval=20,   group="Risk and Exit")
 
 // ─────────────────────────────────────────────────────────────────────
-// PIP SIZE
+// PIP SIZE  (auto-detects pair)
 // ─────────────────────────────────────────────────────────────────────
 float pip = syminfo.mintick *
      (str.contains(syminfo.ticker, "JPY") ? 100 :
@@ -83,31 +78,90 @@ float pip = syminfo.mintick *
       str.contains(syminfo.ticker, "XAG") ? 10  : 10)
 
 // ─────────────────────────────────────────────────────────────────────
-// KILL ZONE
+// KILL ZONE  (M15 chart time)
 // ─────────────────────────────────────────────────────────────────────
-int  utcH  = hour(time, "UTC")
-bool inKZ  = (use_london and utcH >= london_start and utcH < london_end) or
-              (use_ny     and utcH >= ny_start     and utcH < ny_end)
+int  utcH = hour(time, "UTC")
+bool inKZ = (use_london and utcH >= london_start and utcH < london_end) or
+             (use_ny     and utcH >= ny_start     and utcH < ny_end)
 
-bgcolor(use_london and utcH >= london_start and utcH < london_end ? color.new(color.blue,   90) : na, title="London KZ")
-bgcolor(use_ny     and utcH >= ny_start     and utcH < ny_end     ? color.new(color.orange, 90) : na, title="NY KZ")
+bgcolor(use_london and utcH >= london_start and utcH < london_end ? color.new(color.blue,   92) : na, title="London KZ")
+bgcolor(use_ny     and utcH >= ny_start     and utcH < ny_end     ? color.new(color.orange, 92) : na, title="NY KZ")
 
 // ─────────────────────────────────────────────────────────────────────
-// SENTIMENT PROXY — D1 RSI shifted one bar back (strictly past data)
+// D1 BIAS — sentiment proxy (previous completed daily bar, anti-lookahead)
 // ─────────────────────────────────────────────────────────────────────
-string htf_sent = sent_source == "W1 RSI" ? "W" : "D"
-
-float d1_rsi = request.security(syminfo.tickerid, htf_sent,
+float d1_rsi = request.security(syminfo.tickerid, "D",
                     ta.rsi(close, 14)[1],
                     lookahead = barmerge.lookahead_off)
 
-int sentBias = d1_rsi <= sent_short_lv ? 1 : d1_rsi >= sent_long_lv ? -1 : 0
+// +1 = go LONG (retail majority short, fade them)
+// -1 = go SHORT (retail majority long, fade them)
+//  0 = no clear extreme, no trade
+int d1_bias = d1_rsi <= d1_sent_short ? 1 : d1_rsi >= d1_sent_long ? -1 : 0
 
 // ─────────────────────────────────────────────────────────────────────
-// LIQUIDITY LEVELS & SWEEPS
+// H4 TREND — must agree with D1 bias (previous completed H4 bar)
 // ─────────────────────────────────────────────────────────────────────
-float ph = ta.pivothigh(high, pivot_len, pivot_len)
-float pl = ta.pivotlow (low,  pivot_len, pivot_len)
+float h4_ema_now  = request.security(syminfo.tickerid, "240",
+                        ta.ema(close, h4_ema_len)[1],
+                        lookahead = barmerge.lookahead_off)
+float h4_ema_prev = request.security(syminfo.tickerid, "240",
+                        ta.ema(close, h4_ema_len)[2],
+                        lookahead = barmerge.lookahead_off)
+bool h4_bull = h4_ema_now > h4_ema_prev   // H4 trending up
+bool h4_bear = h4_ema_now < h4_ema_prev   // H4 trending down
+
+// Final directional bias — D1 required, H4 optional confirmation
+bool bias_long  = d1_bias ==  1 and (not require_h4 or h4_bull)
+bool bias_short = d1_bias == -1 and (not require_h4 or h4_bear)
+
+// ─────────────────────────────────────────────────────────────────────
+// H1 ORDER BLOCKS — identified on H1, entered on M15 retrace
+// Uses request.security to fetch H1 OHLCV (confirmed H1 bars only)
+// ─────────────────────────────────────────────────────────────────────
+float h1_open  = request.security(syminfo.tickerid, "60", open [1], lookahead=barmerge.lookahead_off)
+float h1_high  = request.security(syminfo.tickerid, "60", high [1], lookahead=barmerge.lookahead_off)
+float h1_low   = request.security(syminfo.tickerid, "60", low  [1], lookahead=barmerge.lookahead_off)
+float h1_close = request.security(syminfo.tickerid, "60", close[1], lookahead=barmerge.lookahead_off)
+
+// Simple H1 OB check: is the most recent completed H1 bar itself an OB
+// that price has since moved away from and is now retracing into?
+float h1_body    = math.abs(h1_close - h1_open)
+bool  h1_bear_ob = h1_close < h1_open and h1_body / pip >= h1_ob_min_body  // bearish H1 candle
+bool  h1_bull_ob = h1_close > h1_open and h1_body / pip >= h1_ob_min_body  // bullish H1 candle
+
+// Is current M15 price inside the H1 OB zone?
+float h1_ob_top  = math.max(h1_open, h1_close)
+float h1_ob_bot  = math.min(h1_open, h1_close)
+bool  in_h1_bull_ob = h1_bear_ob and close >= h1_ob_bot - 3*pip and close <= h1_ob_top + 3*pip
+bool  in_h1_bear_ob = h1_bull_ob and close >= h1_ob_bot - 3*pip and close <= h1_ob_top + 3*pip
+
+// ─────────────────────────────────────────────────────────────────────
+// H1 FAIR VALUE GAPS — fetched as arrays via request.security
+// ─────────────────────────────────────────────────────────────────────
+// Detect on H1 using 3-bar pattern (all past H1 bars, anti-lookahead)
+float h1_p2_high = request.security(syminfo.tickerid, "60", high[2], lookahead=barmerge.lookahead_off)
+float h1_p2_low  = request.security(syminfo.tickerid, "60", low [2], lookahead=barmerge.lookahead_off)
+float h1_p0_high = request.security(syminfo.tickerid, "60", high[1], lookahead=barmerge.lookahead_off)
+float h1_p0_low  = request.security(syminfo.tickerid, "60", low [1], lookahead=barmerge.lookahead_off)
+
+// Bullish H1 FVG: gap_bot=h1_p2_high, gap_top=h1_p0_low, price fills from below
+float h1_bull_fvg_bot = h1_p2_high
+float h1_bull_fvg_top = h1_p0_low
+bool  h1_bull_fvg_valid = h1_p0_low > h1_p2_high and (h1_p0_low - h1_p2_high) / pip >= h1_fvg_min
+bool  in_h1_bull_fvg    = h1_bull_fvg_valid and close >= h1_bull_fvg_bot and close <= h1_bull_fvg_top
+
+// Bearish H1 FVG: gap_top=h1_p2_low, gap_bot=h1_p0_high
+float h1_bear_fvg_top = h1_p2_low
+float h1_bear_fvg_bot = h1_p0_high
+bool  h1_bear_fvg_valid = h1_p2_low > h1_p0_high and (h1_p2_low - h1_p0_high) / pip >= h1_fvg_min
+bool  in_h1_bear_fvg    = h1_bear_fvg_valid and close >= h1_bear_fvg_bot and close <= h1_bear_fvg_top
+
+// ─────────────────────────────────────────────────────────────────────
+// M15 LIQUIDITY LEVELS & SWEEP DETECTION
+// ─────────────────────────────────────────────────────────────────────
+float ph = ta.pivothigh(high, m15_pivot_len, m15_pivot_len)
+float pl = ta.pivotlow (low,  m15_pivot_len, m15_pivot_len)
 
 var float bsl_level = na
 var float ssl_level = na
@@ -117,143 +171,111 @@ if not na(ph)
 if not na(pl)
     ssl_level := pl
 
-bool bsl_swept = not na(bsl_level) and high[1] > bsl_level and close[1] < bsl_level
-bool ssl_swept = not na(ssl_level) and low[1]  < ssl_level and close[1] > ssl_level
+// Check sweep across the last sweep_window M15 bars (not just 1)
+// A sweep = wick past the level, close back on the other side
+bool bsl_swept = false
+bool ssl_swept = false
 
+if not na(bsl_level)
+    for k = 1 to sweep_window
+        if high[k] > bsl_level and close[k] < bsl_level
+            bsl_swept := true
+            break
+
+if not na(ssl_level)
+    for k = 1 to sweep_window
+        if low[k] < ssl_level and close[k] > ssl_level
+            ssl_swept := true
+            break
+
+// Visual sweep markers
 plotshape(bsl_swept, "BSL Swept", shape.triangledown, location.abovebar,
           color.new(color.red,   0), size=size.small, offset=-1)
 plotshape(ssl_swept, "SSL Swept", shape.triangleup,   location.belowbar,
           color.new(color.green, 0), size=size.small, offset=-1)
 
 // ─────────────────────────────────────────────────────────────────────
-// ORDER BLOCK DETECTION
+// M15 ORDER BLOCKS (backup — used if no H1 OB/FVG in range)
 // ─────────────────────────────────────────────────────────────────────
-bool  bullOBFound = false
-bool  bearOBFound = false
-float bullOB_top  = na
-float bullOB_bot  = na
-float bearOB_top  = na
-float bearOB_bot  = na
+bool  m15_bullOB = false
+bool  m15_bearOB = false
+float m15_bullOB_top = na,  m15_bullOB_bot = na
+float m15_bearOB_top = na,  m15_bearOB_bot = na
 
-if bar_index > ob_lookback + 5
-    for i = 2 to ob_lookback
-        float o_i  = open[i]
-        float c_i  = close[i]
-        float h_i  = high[i]
-        float l_i  = low[i]
+if bar_index > h1_ob_lookback + 5
+    for i = 2 to h1_ob_lookback
+        float o_i  = open[i],  c_i = close[i]
+        float h_i  = high[i],  l_i = low[i]
         float body = math.abs(c_i - o_i) / pip
-
-        if body >= ob_min_body
-            if c_i < o_i and not bullOBFound
-                bool impulse_up = false
-                for j = 1 to math.min(i - 1, 5)
-                    if high[i - j] > h_i
-                        impulse_up := true
+        if body >= h1_ob_min_body
+            if c_i < o_i and not m15_bullOB
+                bool up_imp = false
+                for j = 1 to math.min(i-1, 5)
+                    if high[i-j] > h_i
+                        up_imp := true
                         break
-                if impulse_up
-                    if close >= c_i - 3 * pip and close <= o_i + 3 * pip
-                        bullOBFound := true
-                        bullOB_top  := o_i
-                        bullOB_bot  := c_i
-
-            if c_i > o_i and not bearOBFound
-                bool impulse_dn = false
-                for j = 1 to math.min(i - 1, 5)
-                    if low[i - j] < l_i
-                        impulse_dn := true
+                if up_imp and close >= c_i - 3*pip and close <= o_i + 3*pip
+                    m15_bullOB     := true
+                    m15_bullOB_top := o_i
+                    m15_bullOB_bot := c_i
+            if c_i > o_i and not m15_bearOB
+                bool dn_imp = false
+                for j = 1 to math.min(i-1, 5)
+                    if low[i-j] < l_i
+                        dn_imp := true
                         break
-                if impulse_dn
-                    if close >= o_i - 3 * pip and close <= c_i + 3 * pip
-                        bearOBFound := true
-                        bearOB_top  := c_i
-                        bearOB_bot  := o_i
+                if dn_imp and close >= o_i - 3*pip and close <= c_i + 3*pip
+                    m15_bearOB     := true
+                    m15_bearOB_top := c_i
+                    m15_bearOB_bot := o_i
 
 // ─────────────────────────────────────────────────────────────────────
-// FAIR VALUE GAP DETECTION
+// M15 FAIR VALUE GAPS (backup)
 // ─────────────────────────────────────────────────────────────────────
-bool  bullFVGFound = false
-bool  bearFVGFound = false
-float bullFVG_top  = na
-float bullFVG_bot  = na
-float bearFVG_top  = na
-float bearFVG_bot  = na
+bool  m15_bullFVG = false,  m15_bearFVG = false
+float m15_bullFVG_top = na, m15_bullFVG_bot = na
+float m15_bearFVG_top = na, m15_bearFVG_bot = na
 
-if bar_index > fvg_lookback + 5
-    for i = 2 to fvg_lookback
-        float prevHigh = high[i + 1]
-        float prevLow  = low [i + 1]
-        float nextHigh = high[i - 1]
-        float nextLow  = low [i - 1]
-
-        if not bullFVGFound and nextLow > prevHigh
-            float gap = (nextLow - prevHigh) / pip
-            if gap >= fvg_min_size
-                if close >= prevHigh and close <= nextLow
-                    bullFVGFound := true
-                    bullFVG_top  := nextLow
-                    bullFVG_bot  := prevHigh
-
-        if not bearFVGFound and nextHigh < prevLow
-            float gap = (prevLow - nextHigh) / pip
-            if gap >= fvg_min_size
-                if close >= nextHigh and close <= prevLow
-                    bearFVGFound := true
-                    bearFVG_top  := prevLow
-                    bearFVG_bot  := nextHigh
+if bar_index > h1_fvg_lookback + 5
+    for i = 2 to h1_fvg_lookback
+        float pH = high[i+1], pL = low[i+1]
+        float nH = high[i-1], nL = low[i-1]
+        if not m15_bullFVG and nL > pH
+            float gap = (nL - pH) / pip
+            if gap >= h1_fvg_min and close >= pH and close <= nL
+                m15_bullFVG     := true
+                m15_bullFVG_top := nL
+                m15_bullFVG_bot := pH
+        if not m15_bearFVG and nH < pL
+            float gap = (pL - nH) / pip
+            if gap >= h1_fvg_min and close >= nH and close <= pL
+                m15_bearFVG     := true
+                m15_bearFVG_top := pL
+                m15_bearFVG_bot := nH
 
 // ─────────────────────────────────────────────────────────────────────
-// HTF TREND CONFIRMATION
+// STRUCTURE CONFLUENCE
+// H1 zone takes priority; M15 zone is backup
 // ─────────────────────────────────────────────────────────────────────
-float htf_ema_now  = request.security(syminfo.tickerid, htf_tf,
-                         ta.ema(close, 20)[0], lookahead = barmerge.lookahead_off)
-float htf_ema_prev = request.security(syminfo.tickerid, htf_tf,
-                         ta.ema(close, 20)[1], lookahead = barmerge.lookahead_off)
-bool htf_bullish   = htf_ema_now > htf_ema_prev
-bool htf_bearish   = htf_ema_now < htf_ema_prev
+bool structL = in_h1_bull_ob or in_h1_bull_fvg or m15_bullOB or m15_bullFVG
+bool structS = in_h1_bear_ob or in_h1_bear_fvg or m15_bearOB or m15_bearFVG
 
-// ─────────────────────────────────────────────────────────────────────
-// QUALITY SCORE (0-100)
-// ─────────────────────────────────────────────────────────────────────
-int score_long  = 0
-int score_short = 0
+// SL reference price: use H1 zone bottom/top if available, else M15, else fixed
+float sl_ref_long  = in_h1_bull_ob  ? h1_ob_bot  :
+                     in_h1_bull_fvg ? h1_bull_fvg_bot :
+                     m15_bullOB     ? m15_bullOB_bot :
+                     m15_bullFVG    ? m15_bullFVG_bot : close - fixed_sl_pips * pip
 
-if ssl_swept
-    score_long := score_long + 25
-if bsl_swept
-    score_short := score_short + 25
-
-if d1_rsi <= (100.0 - strong_sent)
-    score_long := score_long + 20
-if d1_rsi >= strong_sent
-    score_short := score_short + 20
-
-if inKZ
-    score_long  := score_long  + 15
-    score_short := score_short + 15
-
-if bullOBFound
-    score_long := score_long + 20
-else if bullFVGFound
-    score_long := score_long + 10
-
-if bearOBFound
-    score_short := score_short + 20
-else if bearFVGFound
-    score_short := score_short + 10
-
-if htf_bullish
-    score_long  := score_long  + 20
-if htf_bearish
-    score_short := score_short + 20
-
-bool qualityL = score_long  >= min_quality
-bool qualityS = score_short >= min_quality
+float sl_ref_short = in_h1_bear_ob  ? h1_ob_top  :
+                     in_h1_bear_fvg ? h1_bear_fvg_top :
+                     m15_bearOB     ? m15_bearOB_top :
+                     m15_bearFVG    ? m15_bearFVG_top : close + fixed_sl_pips * pip
 
 // ─────────────────────────────────────────────────────────────────────
 // WEEKLY TRADE CAP
 // ─────────────────────────────────────────────────────────────────────
-var int  week_trades = 0
-var int  prev_closed = 0
+var int week_trades = 0
+var int prev_closed = 0
 
 if dayofweek(time) == 2 and dayofweek(time[1]) != 2
     week_trades := 0
@@ -263,167 +285,167 @@ if newly_closed > 0
     week_trades := week_trades + newly_closed
 prev_closed := strategy.closedtrades
 
-bool under_week_cap = (strategy.opentrades + week_trades) < max_wk_trades
+bool under_cap = (strategy.opentrades + week_trades) < max_wk_trades
 
 // ─────────────────────────────────────────────────────────────────────
 // ENTRY CONDITIONS
 // ─────────────────────────────────────────────────────────────────────
-bool hasEntry     = strategy.opentrades < max_trades and under_week_cap
-bool entryStructL = bullOBFound or bullFVGFound
-bool entryStructS = bearOBFound or bearFVGFound
+// NOT all conditions need to align — just the logical groups:
+//   1. HTF bias (D1 sentiment + optional H4 trend)  ← direction
+//   2. Kill zone active                              ← timing
+//   3. M15 liquidity sweep (within sweep_window)    ← trigger
+//   4. At least one H1 or M15 structure zone        ← precision entry
+// ─────────────────────────────────────────────────────────────────────
+bool canTrade = strategy.opentrades < max_pos and under_cap
 
-bool longCond  = inKZ and sentBias ==  1 and ssl_swept and entryStructL and hasEntry and qualityL
-bool shortCond = inKZ and sentBias == -1 and bsl_swept and entryStructS and hasEntry and qualityS
+bool longCond  = canTrade and bias_long  and inKZ and ssl_swept and structL
+bool shortCond = canTrade and bias_short and inKZ and bsl_swept and structS
 
 // ─────────────────────────────────────────────────────────────────────
-// SL / TP CALCULATION
+// SL / TP IN PIPS
 // ─────────────────────────────────────────────────────────────────────
-float sl_pips_long  = bullOBFound  ? (close - bullOB_bot)  / pip + 5 :
-                      bullFVGFound ? (close - bullFVG_bot) / pip + 5 : fixed_sl_pips
-float sl_pips_short = bearOBFound  ? (bearOB_top  - close) / pip + 5 :
-                      bearFVGFound ? (bearFVG_top - close) / pip + 5 : fixed_sl_pips
+float sl_pips_long  = (close - sl_ref_long)  / pip + 3   // 3 pip buffer below zone
+float sl_pips_short = (sl_ref_short - close) / pip + 3
 
-// Full TP at min_rr  |  Partial TP (50%) at 1:1
-float tp_full_long   = sl_pips_long  * min_rr
-float tp_half_long   = sl_pips_long  * 1.0       // 1:1 for the partial close
-float tp_full_short  = sl_pips_short * min_rr
-float tp_half_short  = sl_pips_short * 1.0
+// Clamp to sensible range
+sl_pips_long  := math.max(5, math.min(80, sl_pips_long))
+sl_pips_short := math.max(5, math.min(80, sl_pips_short))
 
-int sl_ticks_long    = math.round(sl_pips_long  * pip / syminfo.mintick)
-int tp_ticks_long    = math.round(tp_full_long  * pip / syminfo.mintick)
-int tp_half_ticks_l  = math.round(tp_half_long  * pip / syminfo.mintick)
+// Partial close at 2:1,  final close at full_rr (default 3:1)
+int sl_ticks_l    = math.round(sl_pips_long  * pip / syminfo.mintick)
+int tp2r_ticks_l  = math.round(sl_pips_long  * 2.0 * pip / syminfo.mintick)   // 2:1 partial
+int tp3r_ticks_l  = math.round(sl_pips_long  * full_rr * pip / syminfo.mintick) // final
 
-int sl_ticks_short   = math.round(sl_pips_short * pip / syminfo.mintick)
-int tp_ticks_short   = math.round(tp_full_short * pip / syminfo.mintick)
-int tp_half_ticks_s  = math.round(tp_half_short * pip / syminfo.mintick)
-
-bool sl_valid_long  = sl_pips_long  >= 5 and sl_pips_long  <= 150
-bool sl_valid_short = sl_pips_short >= 5 and sl_pips_short <= 150
+int sl_ticks_s    = math.round(sl_pips_short * pip / syminfo.mintick)
+int tp2r_ticks_s  = math.round(sl_pips_short * 2.0 * pip / syminfo.mintick)
+int tp3r_ticks_s  = math.round(sl_pips_short * full_rr * pip / syminfo.mintick)
 
 // ─────────────────────────────────────────────────────────────────────
-// PLACE ORDERS — improved exit logic
+// PLACE ENTRIES + EXITS
 // ─────────────────────────────────────────────────────────────────────
-if longCond and sl_valid_long
+if longCond
     strategy.entry("Long", strategy.long, comment="ICT L")
-    if use_partial_tp
-        // Half closes at 1:1, half runs to full TP
-        strategy.exit("Long Half",  "Long", qty_percent=50, profit=tp_half_ticks_l, loss=sl_ticks_long)
-        strategy.exit("Long Final", "Long", qty_percent=50, profit=tp_ticks_long,   loss=sl_ticks_long)
+    if use_partial
+        strategy.exit("Long 2R",   "Long", qty_percent=50, profit=tp2r_ticks_l, loss=sl_ticks_l)
+        strategy.exit("Long Full", "Long", qty_percent=50, profit=tp3r_ticks_l, loss=sl_ticks_l)
     else
-        strategy.exit("Long Exit", "Long", profit=tp_ticks_long, loss=sl_ticks_long)
+        strategy.exit("Long Exit", "Long", profit=tp3r_ticks_l, loss=sl_ticks_l)
 
-if shortCond and sl_valid_short
+if shortCond
     strategy.entry("Short", strategy.short, comment="ICT S")
-    if use_partial_tp
-        strategy.exit("Short Half",  "Short", qty_percent=50, profit=tp_half_ticks_s, loss=sl_ticks_short)
-        strategy.exit("Short Final", "Short", qty_percent=50, profit=tp_ticks_short,  loss=sl_ticks_short)
+    if use_partial
+        strategy.exit("Short 2R",   "Short", qty_percent=50, profit=tp2r_ticks_s, loss=sl_ticks_s)
+        strategy.exit("Short Full", "Short", qty_percent=50, profit=tp3r_ticks_s, loss=sl_ticks_s)
     else
-        strategy.exit("Short Exit", "Short", profit=tp_ticks_short, loss=sl_ticks_short)
+        strategy.exit("Short Exit", "Short", profit=tp3r_ticks_s, loss=sl_ticks_s)
 
 // ─────────────────────────────────────────────────────────────────────
-// BREAKEVEN — move SL to entry once first partial TP is hit
-// Checks if position size shrank (= partial TP was triggered)
+// BREAKEVEN at 1:1 — move SL to entry once trade is up 1R
 // ─────────────────────────────────────────────────────────────────────
-var float  be_entry_long  = na
-var float  be_entry_short = na
-var bool   be_done_long   = false
-var bool   be_done_short  = false
+var float entry_long  = na
+var float entry_short = na
+var bool  be_done_l   = false
+var bool  be_done_s   = false
 
-// Track entry price when a new long opens
-if longCond and sl_valid_long
-    be_entry_long  := close
-    be_done_long   := false
-if shortCond and sl_valid_short
-    be_entry_short := close
-    be_done_short  := false
+if longCond
+    entry_long := close
+    be_done_l  := false
+if shortCond
+    entry_short := close
+    be_done_s   := false
 
-if use_breakeven and use_partial_tp
-    // Long: once we're up >= 1× risk, move remaining stop to entry
-    if strategy.position_size > 0 and not be_done_long and not na(be_entry_long)
-        float profit_now = (close - be_entry_long) / pip
-        if profit_now >= sl_pips_long
-            strategy.exit("Long BE", "Long", stop=be_entry_long + syminfo.mintick)
-            be_done_long := true
+if use_be
+    if strategy.position_size > 0 and not be_done_l and not na(entry_long)
+        if (close - entry_long) / pip >= sl_pips_long    // reached 1:1
+            strategy.exit("Long BE", "Long", stop = entry_long + syminfo.mintick)
+            be_done_l := true
 
-    // Short: once we're up >= 1× risk, move remaining stop to entry
-    if strategy.position_size < 0 and not be_done_short and not na(be_entry_short)
-        float profit_now = (be_entry_short - close) / pip
-        if profit_now >= sl_pips_short
-            strategy.exit("Short BE", "Short", stop=be_entry_short - syminfo.mintick)
-            be_done_short := true
+    if strategy.position_size < 0 and not be_done_s and not na(entry_short)
+        if (entry_short - close) / pip >= sl_pips_short  // reached 1:1
+            strategy.exit("Short BE", "Short", stop = entry_short - syminfo.mintick)
+            be_done_s := true
 
 // ─────────────────────────────────────────────────────────────────────
-// SESSION EXIT — close any open trade when kill zone ends
-// This prevents ICT intraday setups from becoming accidental swing trades
+// SESSION EXIT — force close when kill zone ends (ICT intraday rule)
 // ─────────────────────────────────────────────────────────────────────
-bool kz_just_ended = use_session_exit and not inKZ and
-     ((use_london and utcH == london_end) or (use_ny and utcH == ny_end))
+bool london_just_ended = use_london and utcH == london_end and hour(time[1], "UTC") == london_end - 1
+bool ny_just_ended     = use_ny     and utcH == ny_end     and hour(time[1], "UTC") == ny_end     - 1
 
-if kz_just_ended and strategy.position_size != 0
-    strategy.close_all(comment="KZ End")
-
-// ─────────────────────────────────────────────────────────────────────
-// ENTRY LABELS
-// ─────────────────────────────────────────────────────────────────────
-if longCond and sl_valid_long
-    label.new(bar_index, low - 5 * pip,
-              "LONG\n" + (bullOBFound ? "OB" : "FVG") + "\nSL:" +
-              str.tostring(math.round(sl_pips_long, 1)) + "p",
-              color     = color.new(color.teal,   20),
-              textcolor = color.white,
-              style     = label.style_label_up,
-              size      = size.small)
-
-if shortCond and sl_valid_short
-    label.new(bar_index, high + 5 * pip,
-              "SHORT\n" + (bearOBFound ? "OB" : "FVG") + "\nSL:" +
-              str.tostring(math.round(sl_pips_short, 1)) + "p",
-              color     = color.new(color.maroon, 20),
-              textcolor = color.white,
-              style     = label.style_label_down,
-              size      = size.small)
-
-// BSL / SSL level lines
-plot(bsl_level, "BSL", color.new(color.red,   60), 1, plot.style_circles)
-plot(ssl_level, "SSL", color.new(color.green, 60), 1, plot.style_circles)
+if session_exit and (london_just_ended or ny_just_ended) and strategy.position_size != 0
+    strategy.close_all(comment="Session End")
 
 // ─────────────────────────────────────────────────────────────────────
-// INFO TABLE (top-right)
+// VISUALS — entry labels
 // ─────────────────────────────────────────────────────────────────────
-var table info = table.new(position.top_right, 2, 7,
-     bgcolor      = color.new(color.black, 75),
-     border_width = 1,
-     frame_width  = 1)
+string long_zone  = in_h1_bull_ob ? "H1 OB" : in_h1_bull_fvg ? "H1 FVG" :
+                    m15_bullOB    ? "M15 OB" : "M15 FVG"
+string short_zone = in_h1_bear_ob ? "H1 OB" : in_h1_bear_fvg ? "H1 FVG" :
+                    m15_bearOB    ? "M15 OB" : "M15 FVG"
+
+if longCond
+    label.new(bar_index, low - 5*pip,
+              "LONG\n" + long_zone + "\nSL " + str.tostring(math.round(sl_pips_long,1)) + "p",
+              color=color.new(color.teal, 15), textcolor=color.white,
+              style=label.style_label_up, size=size.small)
+
+if shortCond
+    label.new(bar_index, high + 5*pip,
+              "SHORT\n" + short_zone + "\nSL " + str.tostring(math.round(sl_pips_short,1)) + "p",
+              color=color.new(color.maroon, 15), textcolor=color.white,
+              style=label.style_label_down, size=size.small)
+
+plot(bsl_level, "BSL", color.new(color.red,   55), 1, plot.style_circles)
+plot(ssl_level, "SSL", color.new(color.green, 55), 1, plot.style_circles)
+
+// H1 OB boxes
+var box h1_bull_box = na
+var box h1_bear_box = na
+if in_h1_bull_ob
+    h1_bull_box := box.new(bar_index-1, h1_ob_top, bar_index+10, h1_ob_bot,
+                           border_color=color.new(color.teal,40),
+                           bgcolor=color.new(color.teal,85))
+if in_h1_bear_ob
+    h1_bear_box := box.new(bar_index-1, h1_ob_top, bar_index+10, h1_ob_bot,
+                           border_color=color.new(color.maroon,40),
+                           bgcolor=color.new(color.maroon,85))
+
+// ─────────────────────────────────────────────────────────────────────
+// INFO TABLE
+// ─────────────────────────────────────────────────────────────────────
+var table info = table.new(position.top_right, 2, 8,
+     bgcolor=color.new(color.black, 75), border_width=1, frame_width=1)
 
 if barstate.islast
-    table.cell(info, 0, 0, "ICT Sentinel BT",  text_color=color.white,  text_size=size.small)
-    table.cell(info, 1, 0, "Lookahead-free",    text_color=color.lime,   text_size=size.small)
+    table.cell(info, 0, 0, "ICT Sentinel v3",   text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 0, "MTF  M15 entry",    text_color=color.lime,   text_size=size.small)
 
-    table.cell(info, 0, 1, "Kill Zone",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 1, inKZ ? "ACTIVE" : "off",
-               text_color = inKZ ? color.orange : color.gray,            text_size=size.tiny)
-
-    table.cell(info, 0, 2, "Sent Bias",         text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 2,
-               sentBias ==  1 ? "LONG  ▲" :
-               sentBias == -1 ? "SHORT ▼" : "neutral",
-               text_color = sentBias == 1 ? color.lime :
-                            sentBias ==-1 ? color.red  : color.gray,     text_size=size.tiny)
-
-    table.cell(info, 0, 3, "D1 RSI",            text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 3, str.tostring(math.round(d1_rsi, 1)),
+    table.cell(info, 0, 1, "D1 RSI",            text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 1, str.tostring(math.round(d1_rsi,1)),
                text_color=color.white,                                   text_size=size.tiny)
 
-    table.cell(info, 0, 4, "Quality L / S",     text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 4, str.tostring(score_long) + " / " + str.tostring(score_short),
-               text_color=color.yellow,                                  text_size=size.tiny)
+    table.cell(info, 0, 2, "D1 Bias",           text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 2, d1_bias==1 ? "LONG ▲" : d1_bias==-1 ? "SHORT ▼" : "neutral",
+               text_color=d1_bias==1 ? color.lime : d1_bias==-1 ? color.red : color.gray,
+               text_size=size.tiny)
 
-    table.cell(info, 0, 5, "Week trades",        text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 5, str.tostring(week_trades) + " / " + str.tostring(max_wk_trades),
-               text_color = week_trades >= max_wk_trades ? color.red : color.lime, text_size=size.tiny)
+    table.cell(info, 0, 3, "H4 Trend",          text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 3, h4_bull ? "▲ up" : h4_bear ? "▼ down" : "flat",
+               text_color=h4_bull ? color.lime : h4_bear ? color.red : color.gray,
+               text_size=size.tiny)
 
-    table.cell(info, 0, 6, "HTF trend",          text_color=color.gray,   text_size=size.tiny)
-    table.cell(info, 1, 6,
-               htf_bullish ? "▲ bullish" : htf_bearish ? "▼ bearish" : "flat",
-               text_color = htf_bullish ? color.lime : htf_bearish ? color.red : color.gray,
+    table.cell(info, 0, 4, "Kill Zone",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 4, inKZ ? "ACTIVE" : "off",
+               text_color=inKZ ? color.orange : color.gray,              text_size=size.tiny)
+
+    table.cell(info, 0, 5, "Sweep L/S",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 5, (ssl_swept?"SSL✓ ":"SSL✗ ") + (bsl_swept?"BSL✓":"BSL✗"),
+               text_color=color.white,                                   text_size=size.tiny)
+
+    table.cell(info, 0, 6, "Structure",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 6, (structL?"L✓ ":"L✗ ") + (structS?"S✓":"S✗"),
+               text_color=color.white,                                   text_size=size.tiny)
+
+    table.cell(info, 0, 7, "Wk trades",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(info, 1, 7, str.tostring(week_trades) + " / " + str.tostring(max_wk_trades),
+               text_color=week_trades>=max_wk_trades ? color.red : color.lime,
                text_size=size.tiny)
