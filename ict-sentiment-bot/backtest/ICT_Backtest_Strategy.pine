@@ -17,8 +17,8 @@ strategy(
      overlay                 = true,
      process_orders_on_close = false,
      calc_on_every_tick      = false,
-     initial_capital         = 50,
-     currency                = currency.USD,
+     initial_capital         = 100,
+     currency                = currency.GBP,
      default_qty_type        = strategy.fixed,    // we calculate lot size manually
      default_qty_value       = 0.01,              // fallback minimum (overridden per trade)
      commission_type         = strategy.commission.percent,
@@ -62,8 +62,8 @@ float h1_fvg_min     = input.float(3.0, "H1 FVG min size (pips)", minval=0.5,   
 // M15 Entry Triggers
 bool  require_bos    = input.bool (false, "Require BOS/CHoCH before entry (strict ICT flow)",  group="M15 Entry Triggers",
                         tooltip="ON = full sequential ICT flow: BOS in kill zone → retrace to zone → entry.\nOFF = simpler: bias + kill zone + in zone = entry. Use OFF first to validate zones.")
-bool  require_zone   = input.bool (false, "Require OB/FVG zone confirmation",                   group="M15 Entry Triggers",
-                        tooltip="ON = price must be inside a D1/H4/H1/M15 OB or FVG to enter.\nOFF = bias + kill zone alone triggers entry. Turn OFF to verify bias/KZ logic works.")
+bool  require_zone   = input.bool (true,  "Require H1/H4 OB zone confirmation",                 group="M15 Entry Triggers",
+                        tooltip="ON = price must be inside an H1 or H4 OB to enter (buys from H1/H4 bull OB, sells from H1/H4 bear OB).\nOFF = bias + kill zone alone triggers entry. Use OFF only to diagnose entry issues.")
 int   m15_pivot_len  = input.int (3,    "M15 swing strength (bars each side)", minval=2, maxval=10, group="M15 Entry Triggers")
 int   sweep_window    = input.int (5,    "Sweep lookback window (M15 bars)",    minval=1, maxval=10, group="M15 Entry Triggers",
                         tooltip="How many past M15 bars to check for a liquidity sweep.\n5 bars = look back 75 minutes for a sweep.")
@@ -71,21 +71,22 @@ int   bos_expire_bars = input.int (48,   "BOS valid window (M15 bars after BOS)"
                         tooltip="How many M15 bars after a BOS to still look for a retrace entry.\n48 bars = 12 hours. After this window the pending setup expires.")
 
 // Risk & Exit
-bool  use_atr_sl     = input.bool (true,  "ATR-based stop loss (recommended)",                       group="Risk and Exit",
-                        tooltip="ON  = SL = ATR(14) × multiplier. Adapts to current volatility.\nOFF = fixed pip SL.")
-float atr_mult       = input.float(1.5,  "ATR multiplier for SL",            minval=0.5, maxval=5.0, group="Risk and Exit",
-                        tooltip="1.5 = 1.5× ATR below entry. Higher = wider stop, fewer stop-outs.")
-float fixed_sl_pips  = input.float(30.0, "Fixed SL (pips, if ATR off)",       minval=10,             group="Risk and Exit")
-bool  use_be         = input.bool (true,  "Move SL to breakeven at 1:1",                             group="Risk and Exit")
-bool  use_partial    = input.bool (true,  "Close 50% at 1:1 R:R",                                    group="Risk and Exit",
-                        tooltip="Take 50% off the table at 1:1. Remaining 50% runs to final TP.")
-float full_rr        = input.float(2.0,  "Final TP (R:R)",                   minval=1.5,             group="Risk and Exit",
-                        tooltip="2:1 is the sweet spot — achievable on M15 gold without giving back profit.")
-bool  session_exit   = input.bool (true,  "Close before weekend (Friday 20:00 UTC)",                 group="Risk and Exit")
-int   max_pos        = input.int  (1,    "Max open positions",                minval=1,               group="Risk and Exit")
-int   max_daily_trades = input.int(1,    "Max trades per day",                minval=1, maxval=3,     group="Risk and Exit",
-                        tooltip="1 = take only the best setup each day. Reduces overtrading significantly.")
-int   max_wk_trades  = input.int  (3,    "Max trades per week",               minval=1, maxval=10,    group="Risk and Exit")
+// Fixed £10 risk per trade — lot size is auto-calculated from SL distance
+// SL is placed at the ICT invalidation level (sweep low/high or zone edge)
+float risk_gbp       = input.float(10.0, "Risk per trade (£)",                minval=1, maxval=100,   group="Risk and Exit",
+                        tooltip="Fixed £ amount risked per trade. Lot size auto-adjusts so SL always = this amount.")
+float atr_mult       = input.float(1.5,  "ATR fallback SL multiplier",        minval=0.5, maxval=5.0, group="Risk and Exit",
+                        tooltip="Used only when no ICT level found. SL = ATR(14) × this value.")
+float full_rr        = input.float(2.0,  "Take profit (R:R)",                 minval=1.5, maxval=5.0, group="Risk and Exit",
+                        tooltip="At 38% win rate you need 2:1+ to be profitable. 2:1 = break even at 33% win rate.")
+bool  use_partial    = input.bool (false, "Partial close 50% at 1:1",                                 group="Risk and Exit",
+                        tooltip="OFF recommended at 38% win rate — partials reduce average win below the profitable threshold.\nOnly enable if win rate is above 45%.")
+bool  use_be         = input.bool (false, "Move SL to breakeven after 1:1",                           group="Risk and Exit",
+                        tooltip="OFF recommended — conflicts with strategy.exit and creates 0R results that waste winning trades.")
+bool  session_exit   = input.bool (true,  "Close before weekend (Friday 20:00 UTC)",                  group="Risk and Exit")
+int   max_pos        = input.int  (1,    "Max open positions",                 minval=1,               group="Risk and Exit")
+int   max_daily_trades = input.int(1,    "Max trades per day",                 minval=1, maxval=3,     group="Risk and Exit")
+int   max_wk_trades  = input.int  (3,    "Max trades per week",                minval=1, maxval=10,    group="Risk and Exit")
 
 // ─────────────────────────────────────────────────────────────────────
 // PIP SIZE  (auto-detects pair)
@@ -99,41 +100,27 @@ float pip = syminfo.mintick *
       str.contains(syminfo.ticker, "JPY") ? 10  : 10)
 
 // ─────────────────────────────────────────────────────────────────────
-// TIERED RISK SIZING  (fixed £ amounts, not % of equity)
+// FIXED £10 RISK SIZING
 // ─────────────────────────────────────────────────────────────────────
-// Rules:
-//   Balance  £50  → £99   : risk £5  per trade
-//   Balance  £100 → £199  : risk £10 per trade
-//   Balance  £200 → £499  : risk £20 per trade  (hard cap until £500)
-//   Balance  £500+         : stays at £20 — manual re-evaluation needed
-//
-// Lot size = risk_amount / (sl_pips × pip_value_per_lot_in_GBP)
-// Pip value per standard lot ≈ £7.87 for major USD pairs at GBPUSD 1.27
-// (XAU and JPY pairs use slightly different values — adjust live)
+// Lot size = £10 / (sl_pips × pip_value_per_lot_in_£)
+// SL distance varies per trade (ICT level) — lot size adjusts accordingly
+// Wide SL → smaller lots   |   Tight SL → larger lots
 // ─────────────────────────────────────────────────────────────────────
 float balance = strategy.equity
 
-// $200-$499 and $500+ → $20 (capped) | $100-$199 → $10 | $50-$99 → $5
-float risk_amount = (balance >= 200.0 ? 20.0 :
-                     balance >= 100.0 ? 10.0 :
-                                         5.0)
+// Pip value per standard lot in GBP (approximate, at GBPUSD ~1.27)
+// XAUUSD: $10/pip ÷ 1.27 ≈ £7.87  |  GBPUSD: £10/pip  |  others ≈ £7.87
+float pip_val_per_lot = (str.contains(syminfo.ticker, "GBP") ? 10.0 :
+                         str.contains(syminfo.ticker, "XAU") ?  7.87 :
+                         str.contains(syminfo.ticker, "JPY") ?  7.0  : 7.87)
 
-// Risk tier label for the info table
-string risk_tier = (balance >= 500.0 ? "$20  ⚠ re-evaluate" :
-                    balance >= 200.0 ? "$20 / trade" :
-                    balance >= 100.0 ? "$10 / trade" :
-                                       "$5  / trade")
-
-// Approximate pip value per standard lot in USD
-// XAUUSD: $10/pip  |  EURUSD: $10/pip  |  GBPUSD: $10/pip  |  JPY pairs: ~$9/pip
-float pip_val_per_lot = (str.contains(syminfo.ticker, "XAU") ? 10.0 :
-                         str.contains(syminfo.ticker, "JPY") ?  9.0 : 10.0)
-
-// Calculate lot size, rounded to nearest 0.01, clamped to 0.01–5.0
+// Lot size calculated so SL always = exactly risk_gbp
 f_lots(sl_pips) =>
-    float raw  = risk_amount / math.max(sl_pips, 1.0) / pip_val_per_lot
+    float raw  = risk_gbp / math.max(sl_pips, 1.0) / pip_val_per_lot
     float lots = math.round(raw / 0.01) * 0.01
     math.max(0.01, math.min(5.0, lots))
+
+string risk_tier = "£" + str.tostring(risk_gbp, "#") + " / trade"
 
 // ─────────────────────────────────────────────────────────────────────
 // CONTRARIAN SENTIMENT CONFIRMATION
@@ -433,14 +420,17 @@ bool structS = (in_d1_bear_ob or in_d1_bear_fvg or
                 m15_bearOB    or m15_bearFVG)
 
 // Best available zone label for entry labels and SL reference
-string best_zone_long  = (in_d1_bull_ob ? "D1 OB"  : in_d1_bull_fvg ? "D1 FVG" :
-                          in_h4_bull_ob ? "H4 OB"  : in_h4_bull_fvg ? "H4 FVG" :
-                          in_h1_bull_ob ? "H1 OB"  : in_h1_bull_fvg ? "H1 FVG" :
-                          m15_bullOB    ? "M15 OB" : "M15 FVG")
-string best_zone_short = (in_d1_bear_ob ? "D1 OB"  : in_d1_bear_fvg ? "D1 FVG" :
-                          in_h4_bear_ob ? "H4 OB"  : in_h4_bear_fvg ? "H4 FVG" :
-                          in_h1_bear_ob ? "H1 OB"  : in_h1_bear_fvg ? "H1 FVG" :
-                          m15_bearOB    ? "M15 OB" : "M15 FVG")
+// Entry zone label — H4/H1 OBs are now the primary entry triggers
+string best_zone_long  = (in_h4_bull_ob ? "H4 OB ▶ LONG"  :
+                          in_h1_bull_ob ? "H1 OB ▶ LONG"  :
+                          in_d1_bull_ob ? "D1 OB ▶ LONG"  : in_d1_bull_fvg ? "D1 FVG" :
+                          in_h4_bull_fvg ? "H4 FVG"        : in_h1_bull_fvg ? "H1 FVG" :
+                          m15_bullOB    ? "M15 OB"          : "M15 FVG")
+string best_zone_short = (in_h4_bear_ob ? "H4 OB ▶ SHORT" :
+                          in_h1_bear_ob ? "H1 OB ▶ SHORT" :
+                          in_d1_bear_ob ? "D1 OB ▶ SHORT" : in_d1_bear_fvg ? "D1 FVG" :
+                          in_h4_bear_fvg ? "H4 FVG"        : in_h1_bear_fvg ? "H1 FVG" :
+                          m15_bearOB    ? "M15 OB"          : "M15 FVG")
 
 
 // ─────────────────────────────────────────────────────────────────────
@@ -515,9 +505,12 @@ if not bias_short and pending_short
 // ─────────────────────────────────────────────────────────────────────
 bool canTrade = strategy.opentrades < max_pos and under_cap
 
-// Build up entry conditions layer by layer — toggle each filter on/off independently
-bool zone_ok_l = (not require_zone) or structL
-bool zone_ok_s = (not require_zone) or structS
+// Zone filter: when ON, entries only fire inside an H4 or H1 OB
+//   LONG  = price in H4 or H1 bullish OB (demand zone — institutions bought here)
+//   SHORT = price in H4 or H1 bearish OB (supply zone — institutions sold here)
+// This tightens entries to the highest-probability OB retrace points
+bool zone_ok_l = (not require_zone) or (in_h4_bull_ob or in_h1_bull_ob)
+bool zone_ok_s = (not require_zone) or (in_h4_bear_ob or in_h1_bear_ob)
 
 bool longCond  = canTrade and (require_bos ? (pending_long  and zone_ok_l) : (bias_long  and inKZ and zone_ok_l))
 bool shortCond = canTrade and (require_bos ? (pending_short and zone_ok_s) : (bias_short and inKZ and zone_ok_s))
@@ -530,25 +523,42 @@ if shortCond
 // ─────────────────────────────────────────────────────────────────────
 // SL — ATR-based (adapts to volatility) or fixed pip fallback
 // ─────────────────────────────────────────────────────────────────────
-float atr_val      = ta.atr(14)
-float sl_dist      = use_atr_sl ? atr_val * atr_mult : fixed_sl_pips * pip
+// ATR fallback when no ICT level is available
+float atr_val = ta.atr(14)
 
-float sl_pips_long  = sl_dist / pip
-float sl_pips_short = sl_dist / pip
+// SL at ICT invalidation level — priority: sweep level → H4 OB edge → H1 OB edge → ATR fallback
+// SL is placed just beyond the OB boundary — if price closes through the OB, trade is invalid
+float sl_stop_long  = (not na(ssl_level)   ? ssl_level       - atr_val * 0.25 :
+                       in_h4_bull_ob       ? h4_ob_bot        - atr_val * 0.25 :
+                       in_h1_bull_ob       ? h1_ob_bot        - atr_val * 0.25 :
+                       in_h1_bull_fvg      ? h1_bull_fvg_bot  - atr_val * 0.25 :
+                       m15_bullOB          ? m15_bullOB_bot   - atr_val * 0.25 :
+                       m15_bullFVG         ? m15_bullFVG_bot  - atr_val * 0.25 :
+                                             close            - atr_val * atr_mult)
 
-// Clamp: floor prevents SL inside the spread, ceiling prevents absurd size
-float sl_floor   = str.contains(syminfo.ticker, "XAU") ? 15.0 : 8.0
+float sl_stop_short = (not na(bsl_level)   ? bsl_level        + atr_val * 0.25 :
+                       in_h4_bear_ob       ? h4_ob_top         + atr_val * 0.25 :
+                       in_h1_bear_ob       ? h1_ob_top         + atr_val * 0.25 :
+                       in_h1_bear_fvg      ? h1_bear_fvg_top   + atr_val * 0.25 :
+                       m15_bearOB          ? m15_bearOB_top    + atr_val * 0.25 :
+                       m15_bearFVG         ? m15_bearFVG_top   + atr_val * 0.25 :
+                                             close             + atr_val * atr_mult)
+
+float sl_pips_long  = math.max(10.0, (close - sl_stop_long)  / pip)
+float sl_pips_short = math.max(10.0, (sl_stop_short - close) / pip)
+
+// Clamp ceiling so lot size never becomes unreasonably large
 float sl_ceiling = str.contains(syminfo.ticker, "XAU") ? 300.0 : 80.0
-sl_pips_long  := math.max(sl_floor, math.min(sl_ceiling, sl_pips_long))
-sl_pips_short := math.max(sl_floor, math.min(sl_ceiling, sl_pips_short))
+sl_pips_long  := math.min(sl_ceiling, sl_pips_long)
+sl_pips_short := math.min(sl_ceiling, sl_pips_short)
 
-// Ticks for strategy.exit — partial at 1:1, final at full_rr (default 2:1)
+// Ticks for strategy.exit
 int sl_ticks_l   = math.round(sl_pips_long  * pip / syminfo.mintick)
-int tp1r_ticks_l = math.round(sl_pips_long  * 1.0 * pip / syminfo.mintick)   // 1:1 partial
-int tp2r_ticks_l = math.round(sl_pips_long  * full_rr * pip / syminfo.mintick) // final
+int tp1r_ticks_l = math.round(sl_pips_long  * 1.0     * pip / syminfo.mintick)
+int tp2r_ticks_l = math.round(sl_pips_long  * full_rr * pip / syminfo.mintick)
 
 int sl_ticks_s   = math.round(sl_pips_short * pip / syminfo.mintick)
-int tp1r_ticks_s = math.round(sl_pips_short * 1.0 * pip / syminfo.mintick)
+int tp1r_ticks_s = math.round(sl_pips_short * 1.0     * pip / syminfo.mintick)
 int tp2r_ticks_s = math.round(sl_pips_short * full_rr * pip / syminfo.mintick)
 
 // ─────────────────────────────────────────────────────────────────────
@@ -570,31 +580,8 @@ if shortCond
     else
         strategy.exit("Short Exit", "Short", profit=tp2r_ticks_s, loss=sl_ticks_s)
 
-// ─────────────────────────────────────────────────────────────────────
-// BREAKEVEN at 1:1 — move SL to entry once trade is up 1R
-// ─────────────────────────────────────────────────────────────────────
-var float entry_long  = na
-var float entry_short = na
-var bool  be_done_l   = false
-var bool  be_done_s   = false
-
-if longCond
-    entry_long := close
-    be_done_l  := false
-if shortCond
-    entry_short := close
-    be_done_s   := false
-
-if use_be
-    if strategy.position_size > 0 and not be_done_l and not na(entry_long)
-        if (close - entry_long) / pip >= sl_pips_long    // reached 1:1
-            strategy.exit("Long BE", "Long", stop = entry_long + syminfo.mintick)
-            be_done_l := true
-
-    if strategy.position_size < 0 and not be_done_s and not na(entry_short)
-        if (entry_short - close) / pip >= sl_pips_short  // reached 1:1
-            strategy.exit("Short BE", "Short", stop = entry_short - syminfo.mintick)
-            be_done_s := true
+// BE removed — was conflicting with strategy.exit orders and converting
+// valid winners into 0R results. At 38% win rate, clean 2:1 exits are more profitable.
 
 // ─────────────────────────────────────────────────────────────────────
 // WEEKEND EXIT — close before Friday market close to avoid gap risk
@@ -723,5 +710,5 @@ table.cell(info, 1, 10, risk_tier,
            text_color=balance >= 500.0 ? color.orange : color.lime,   text_size=size.tiny)
 
 table.cell(info, 0, 11, "Balance",          text_color=color.gray,   text_size=size.tiny)
-table.cell(info, 1, 11, "$" + str.tostring(math.round(balance, 2)),
+table.cell(info, 1, 11, "£" + str.tostring(math.round(balance, 2)),
            text_color=color.white,                                    text_size=size.tiny)
