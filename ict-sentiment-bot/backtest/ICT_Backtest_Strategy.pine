@@ -91,22 +91,16 @@ float pip = syminfo.mintick *
 // ─────────────────────────────────────────────────────────────────────
 float balance = strategy.equity
 
-float risk_amount = balance >= 200.0 ? 20.0 :   // £200-£499 and £500+ → £20 (capped)
-                    balance >= 100.0 ? 10.0 :   // £100-£199 → £10
-                                        5.0     // £50-£99   → £5
+// £200-£499 and £500+ → £20 (capped)  |  £100-£199 → £10  |  £50-£99 → £5
+float risk_amount = balance >= 200.0 ? 20.0 : balance >= 100.0 ? 10.0 : 5.0
 
 // Risk tier label for the info table
-string risk_tier = balance >= 500.0 ? "£20  ⚠ re-evaluate" :
-                   balance >= 200.0 ? "£20 / trade" :
-                   balance >= 100.0 ? "£10 / trade" :
-                                      "£5  / trade"
+string risk_tier = balance >= 500.0 ? "£20 re-evaluate" : balance >= 200.0 ? "£20 / trade" : balance >= 100.0 ? "£10 / trade" : "£5 / trade"
 
 // Approximate pip value per standard lot in GBP
 // Major pairs vs account currency (GBP): ~£7.87/pip (EURUSD at GBPUSD 1.27)
 // GBPUSD: £10/pip  |  GBPJPY: £10/pip  |  XAUUSD: ~£8/pip
-float pip_val_per_lot = str.contains(syminfo.ticker, "GBP") ? 10.0 :
-                        str.contains(syminfo.ticker, "XAU") ?  8.0 :
-                        str.contains(syminfo.ticker, "JPY") ?  7.5 : 7.87
+float pip_val_per_lot = str.contains(syminfo.ticker, "GBP") ? 10.0 : str.contains(syminfo.ticker, "XAU") ? 8.0 : str.contains(syminfo.ticker, "JPY") ? 7.5 : 7.87
 
 // Calculate lot size, rounded to nearest 0.01, clamped to 0.01–5.0
 f_lots(float sl_pips) =>
@@ -319,15 +313,8 @@ bool structL = in_h1_bull_ob or in_h1_bull_fvg or m15_bullOB or m15_bullFVG
 bool structS = in_h1_bear_ob or in_h1_bear_fvg or m15_bearOB or m15_bearFVG
 
 // SL reference price: use H1 zone bottom/top if available, else M15, else fixed
-float sl_ref_long  = in_h1_bull_ob  ? h1_ob_bot  :
-                     in_h1_bull_fvg ? h1_bull_fvg_bot :
-                     m15_bullOB     ? m15_bullOB_bot :
-                     m15_bullFVG    ? m15_bullFVG_bot : close - fixed_sl_pips * pip
-
-float sl_ref_short = in_h1_bear_ob  ? h1_ob_top  :
-                     in_h1_bear_fvg ? h1_bear_fvg_top :
-                     m15_bearOB     ? m15_bearOB_top :
-                     m15_bearFVG    ? m15_bearFVG_top : close + fixed_sl_pips * pip
+float sl_ref_long  = in_h1_bull_ob ? h1_ob_bot : in_h1_bull_fvg ? h1_bull_fvg_bot : m15_bullOB ? m15_bullOB_bot : m15_bullFVG ? m15_bullFVG_bot : close - fixed_sl_pips * pip
+float sl_ref_short = in_h1_bear_ob ? h1_ob_top : in_h1_bear_fvg ? h1_bear_fvg_top : m15_bearOB ? m15_bearOB_top : m15_bearFVG ? m15_bearFVG_top : close + fixed_sl_pips * pip
 
 // ─────────────────────────────────────────────────────────────────────
 // WEEKLY TRADE CAP
@@ -435,10 +422,8 @@ if session_exit and (london_just_ended or ny_just_ended) and strategy.position_s
 // ─────────────────────────────────────────────────────────────────────
 // VISUALS — entry labels
 // ─────────────────────────────────────────────────────────────────────
-string long_zone  = in_h1_bull_ob ? "H1 OB" : in_h1_bull_fvg ? "H1 FVG" :
-                    m15_bullOB    ? "M15 OB" : "M15 FVG"
-string short_zone = in_h1_bear_ob ? "H1 OB" : in_h1_bear_fvg ? "H1 FVG" :
-                    m15_bearOB    ? "M15 OB" : "M15 FVG"
+string long_zone  = in_h1_bull_ob ? "H1 OB" : in_h1_bull_fvg ? "H1 FVG" : m15_bullOB ? "M15 OB" : "M15 FVG"
+string short_zone = in_h1_bear_ob ? "H1 OB" : in_h1_bear_fvg ? "H1 FVG" : m15_bearOB ? "M15 OB" : "M15 FVG"
 
 if longCond
     label.new(bar_index, low - 5*pip,
